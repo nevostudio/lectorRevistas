@@ -1,0 +1,36 @@
+# Entorno
+.venv/
+__pycache__/
+*.pyc
+
+# Datos locales (biblioteca de revistas analizadas)
+data/
+*.db
+
+# Salidas generadas
+output/
+
+# Logs de ejecucion
+logs/
+
+# Trabajo temporal del fetcher
+.magazine_work/
+
+# Credenciales y configuracion privada
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.config/
+
+# Herramientas locales y caches
+.claude/
+.pytest_cache/
+.venv*/
+.DS_Store
+Thumbs.db
+
+# Capturas e informes auxiliares generados
+capturas/
+docs/*.pdf

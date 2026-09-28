@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEVO · Inteligencia competitiva</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== Top bar ===== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">N</div>
+      <div class="wordmark">NE<span>V</span>O</div>
+    </div>
+    <nav class="nav">
+      <a href="#" data-screen="extractor" class="active"><span class="n">01</span> Extractor</a>
+      <a href="#" data-screen="revision"><span class="n">02</span> Revisión</a>
+      <a href="#" data-screen="biblioteca"><span class="n">03</span> Biblioteca</a>
+    </nav>
+    <div class="topbar-right">
+      <div class="status-dot"><i></i> CONECTADO</div>
+      <div class="avatar">NV</div>
+    </div>
+  </header>
+
+  <!-- ============ SCREEN 1 · EXTRACTOR ============ -->
+  <section class="screen active" id="extractor">
+    <div class="pagehead">
+      <div class="crumbs">
+        <span class="lbl">Inteligencia competitiva</span>
+        <span class="chip">Revistas del sector</span>
+      </div>
+      <h1>Extractor de anunciantes</h1>
+      <p class="sub">Analiza una revista del sector y extrae cada marca anunciante, su contacto y su espacio comprado.</p>
+    </div>
+
+    <div class="body">
+      <div class="extractor">
+
+        <!-- Fuente -->
+        <div class="card panel">
+          <h2><span class="step-no">01</span>Fuente</h2>
+          <p class="phint">Pega la URL de la edición online o sube el PDF de la revista.</p>
+
+          <label class="lbl field-label">URL de la revista</label>
+          <div class="source-row">
+            <input class="input" id="urlInput" type="text" placeholder="https://...">
+          </div>
+
+          <div class="divider-or"><span>o</span></div>
+
+          <label class="dropzone" for="pdfInput">
+            <span class="dz-ico">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 16V4m0 0l-4 4m4-4l4 4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+            </span>
+            <span>
+              <div class="dz-t">Arrastra un PDF o haz clic para subir</div>
+              <div class="dz-s" id="pdfName">Ningún archivo seleccionado</div>
+            </span>
+            <input type="file" id="pdfInput" accept="application/pdf" hidden>
+          </label>
+        </div>
+
+        <!-- Modo -->
+        <div class="card panel">
+          <h2><span class="step-no">02</span>Modo de detección</h2>
+          <p class="phint">Elige cómo NEVO identifica los anuncios dentro de la revista.</p>
+
+          <div class="modes">
+            <div class="opt-card sel" data-mode="gratis">
+              <div class="radio"></div>
+              <div>
+                <div class="ot">Gratis</div>
+                <div class="od">Texto y patrones. Sin coste, menos preciso.</div>
+              </div>
+              <div class="badge">0 €</div>
+            </div>
+            <div class="opt-card" data-mode="ia">
+              <div class="radio"></div>
+              <div>
+                <div class="ot">IA · Análisis visual</div>
+                <div class="od">Visión por computador con Claude. Más preciso.</div>
+              </div>
+              <div class="badge">Claude</div>
+            </div>
+          </div>
+
+          <div class="ia-extra" id="iaExtra">
+            <label class="lbl field-label" style="margin-top:4px">Anthropic API key</label>
+            <input class="input mono" type="password" placeholder="sk-ant-•••••••••••••••••••••••••" id="apiKey">
+            <label class="check" style="margin-top:14px">
+              <input type="checkbox" id="rememberKey">
+              <span class="box"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 6.2l2.6 2.6L10 3"/></svg></span>
+              Recordar la clave en este equipo
+            </label>
+          </div>
+        </div>
+
+        <!-- Action -->
+        <button class="btn btn-primary btn-lg btn-block" id="extractBtn">
+          Extraer anunciantes
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m0 0l-6-6m6 6l-6 6"/></svg>
+        </button>
+
+        <!-- Progress / steps -->
+        <div class="card panel" id="progressCard">
+          <div class="prog-head">
+            <span class="pt">Progreso de la extracción</span>
+            <span class="pp" id="pctLabel">En espera</span>
+          </div>
+          <p class="prog-state" id="progState">Pulsa “Extraer anunciantes” para empezar el análisis.</p>
+          <div class="pbar"><i id="pfill"></i></div>
+
+          <div class="steps-list" id="stepsList"></div>
+
+          <div class="prog-log" id="progLog"></div>
+
+          <div class="result-banner" id="resultBanner">
+            <span class="rb-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12l5 5L20 6"/></svg></span>
+            <div>
+              <div class="rb-t" id="rbTitle">0 anunciantes extraídos</div>
+              <div class="rb-s" id="rbSub">—</div>
+            </div>
+            <button class="btn btn-dark" id="goReview">Revisar dudosos
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m0 0l-6-6m6 6l-6 6"/></svg>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREEN 2 · REVISIÓN ============ -->
+  <section class="screen" id="revision">
+    <div class="pagehead">
+      <div class="crumbs">
+        <span class="lbl" id="revCrumb">Revisión de casos dudosos</span>
+        <span class="chip accent" id="revChip">0 por revisar</span>
+      </div>
+      <h1>Revisión</h1>
+      <p class="sub">Revisa solo los anunciantes marcados como dudosos. Los demás pasan automáticamente al informe.</p>
+    </div>
+
+    <div class="body">
+      <div class="review" id="reviewWrap">
+
+        <!-- Queue -->
+        <aside class="queue card panel" style="padding:18px">
+          <div class="queue-head">
+            <span class="lbl">Dudosos</span>
+            <span class="q-meta" id="queueCount">0 pendientes</span>
+          </div>
+          <div id="queueList"></div>
+        </aside>
+
+        <!-- Detail -->
+        <div class="detail" id="reviewDetail">
+          <div class="detail-top">
+            <span class="chip accent" id="detStatus">Pendiente</span>
+            <span class="chip" id="detFlag">—</span>
+            <span class="pager" style="margin-left:auto" id="detPager">00 / 00</span>
+          </div>
+
+          <div class="preview" id="reviewPreview">
+            <img class="page-img" id="adImg" alt="Página de la revista" hidden>
+          </div>
+
+          <div class="fields">
+            <div class="field"><label class="lbl">Marca</label><input class="input" id="fMarca"></div>
+            <div class="field"><label class="lbl">Sector</label><input class="input" id="fSector"></div>
+            <div class="field"><label class="lbl">Web</label><input class="input" id="fWeb"></div>
+            <div class="field"><label class="lbl">Email</label><input class="input" id="fEmail" placeholder="—"></div>
+            <div class="field"><label class="lbl">Teléfono</label><input class="input" id="fTel" placeholder="—"></div>
+            <div class="field"><label class="lbl">Tamaño</label><input class="input" id="fTam" placeholder="—"></div>
+          </div>
+
+          <div class="actionbar">
+            <button class="btn btn-ghost" id="discardBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              Descartar
+            </button>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost" id="skipBtn">Saltar</button>
+            <button class="btn btn-primary" id="confirmBtn">
+              Confirmar y siguiente
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+            </button>
+          </div>
+
+          <div class="actionbar" style="border-top:1px solid var(--line);margin-top:4px;padding-top:18px">
+            <span class="export-hint" id="exportHint">Los pendientes se conservan en el informe.</span>
+            <div class="spacer"></div>
+            <button class="btn btn-dark" id="exportBtn">
+              Terminar y generar informe
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m0 0l-6-6m6 6l-6 6"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Estado vacío (sin extracción) -->
+        <div class="detail" id="reviewEmpty" style="display:none">
+          <div class="card panel empty-state">
+            <div class="es-t">Todavía no hay nada que revisar</div>
+            <div class="es-s">Ejecuta una extracción en el <a href="#" data-screen="extractor" class="golink">Extractor</a>. Si algún anunciante queda dudoso, aparecerá aquí.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREEN 3 · BIBLIOTECA ============ -->
+  <section class="screen" id="biblioteca">
+    <div class="pagehead">
+      <div class="crumbs">
+        <span class="lbl">Archivo histórico</span>
+        <span class="chip" id="savedChip">0 números guardados</span>
+      </div>
+      <h1>Biblioteca</h1>
+      <p class="sub">Selecciona dos números para comparar quién entra y quién sale entre ediciones (A = anterior, B = actual).</p>
+    </div>
+
+    <div class="body">
+      <div class="library">
+
+        <div class="lib-toolbar">
+          <div class="lib-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+            <input type="text" placeholder="Buscar revista o número…" id="libSearch">
+          </div>
+          <button class="btn btn-dark" data-screen="extractor">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7h14"/></svg>
+            Nuevo análisis
+          </button>
+        </div>
+
+        <div class="issues" id="issueList"></div>
+
+        <div class="lib-foot">
+          <div class="sel-hint" id="selHint">Selecciona <b>2 números</b> para comparar · <b>0</b> seleccionados</div>
+          <div style="display:flex;gap:12px">
+            <button class="btn btn-ghost" id="viewBtn">Ver anunciantes</button>
+            <button class="btn btn-primary" id="compareBtn" disabled>
+              Comparar seleccionados
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7h11m0 0l-3-3m3 3l-3 3M16 17H5m0 0l3-3m-3 3l3 3"/></svg>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- modal ver anunciantes -->
+<div class="modal-back" id="modalBack">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modalTitle">Anunciantes</h3>
+      <button class="x" id="modalClose">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
