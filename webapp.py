@@ -24,6 +24,7 @@ import tempfile
 import threading
 import webbrowser
 import mimetypes
+import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -40,6 +41,7 @@ OUT_DIR = os.path.join(ROOT, "output")
 # Estado global del trabajo de extraccion (app local de un solo usuario)
 # --------------------------------------------------------------------------- #
 _LOCK = threading.Lock()
+_EXPORT_LOCK = threading.Lock()
 JOB = {
     "state": "idle",        # idle | running | done | error
     "step": -1,             # 0..5 fase actual; 6 = todo hecho
@@ -48,15 +50,31 @@ JOB = {
     "result": None,         # dict de run_extraction (advertisers, pages, meta)
     "summary": {"total": 0, "flagged": 0},
     "exported": False,
+    "export_response": None,
+    "job_id": None,
 }
 _UPLOADS: dict[str, str] = {}   # token -> ruta del PDF subido
 
 
 def _reset_job():
     with _LOCK:
+        job_id = uuid.uuid4().hex
         JOB.update(state="running", step=0, messages=[], error=None,
                    result=None, summary={"total": 0, "flagged": 0},
-                   exported=False)
+                   exported=False, export_response=None, job_id=job_id)
+        return job_id
+
+
+def _start_job() -> str | None:
+    """Comprueba y crea un trabajo bajo el mismo bloqueo."""
+    with _LOCK:
+        if JOB["state"] in ("running", "exporting"):
+            return None
+        job_id = uuid.uuid4().hex
+        JOB.update(state="running", step=0, messages=[], error=None,
+                   result=None, summary={"total": 0, "flagged": 0},
+                   exported=False, export_response=None, job_id=job_id)
+        return job_id
 
 
 def _phase_for(msg: str, current: int) -> int:
@@ -120,7 +138,7 @@ def _adv_to_item(a, index: int) -> dict:
 # --------------------------------------------------------------------------- #
 # Worker de extraccion
 # --------------------------------------------------------------------------- #
-def _extract_worker(params: dict):
+def _extract_worker(params: dict, job_id: str | None = None):
     url = (params.get("url") or "").strip() or None
     mode = params.get("mode") or "gratis"
     use_ai = mode == "ia"
@@ -133,80 +151,122 @@ def _extract_worker(params: dict):
     if token and token in _UPLOADS and os.path.exists(_UPLOADS[token]):
         pdf_path = _UPLOADS[token]
 
-    # Persistimos preferencias igual que la app de escritorio.
-    if url:
-        config.set_last_url(url)
-    if use_ai:
-        if remember and given_key:
-            config.remember_api_key(given_key)
-        elif not remember:
-            config.forget_api_key()
-
     try:
+        # Un fallo guardando preferencias no puede dejar el trabajo bloqueado.
+        try:
+            if url:
+                config.set_last_url(url)
+            if use_ai:
+                if remember and given_key:
+                    config.remember_api_key(given_key)
+                elif not remember:
+                    config.forget_api_key()
+        except OSError as e:
+            _progress(f"AVISO: no se pudieron guardar las preferencias: {e}")
+
         result = run_extraction(
             url=url, pdf_path=pdf_path, use_ai=use_ai,
             api_key=api_key, run_ocr=True, progress=_progress,
         )
         if not result.get("ok"):
             with _LOCK:
-                JOB.update(state="error",
-                           error=result.get("error", "Extracción fallida"))
+                if job_id is None or JOB.get("job_id") == job_id:
+                    JOB.update(state="error", result=result,
+                               error=result.get("error", "Extracción fallida"))
             return
         advertisers = result["advertisers"]
         flagged = [a for a in advertisers if getattr(a, "review_flag", "")]
+        if result.get("analysis_status") == "parcial" and not advertisers:
+            with _LOCK:
+                if job_id is None or JOB.get("job_id") == job_id:
+                    JOB.update(
+                        state="error", result=result,
+                        error=("El análisis quedó parcial y no produjo "
+                               "anunciantes. Revisa las páginas pendientes."),
+                    )
+            return
         with _LOCK:
+            if job_id is not None and JOB.get("job_id") != job_id:
+                return
             JOB["result"] = result
-            JOB["summary"] = {"total": len(advertisers), "flagged": len(flagged)}
+            JOB["summary"] = {
+                "total": len(advertisers),
+                "flagged": len(flagged),
+                "analysis_status": result.get("analysis_status", "completo"),
+            }
             JOB["step"] = 6
             JOB["state"] = "done"
         # Si no hay dudosos, exportamos directamente (como la app de escritorio).
-        if not flagged:
-            _do_export([])
+        if not flagged and result.get("analysis_status") == "completo":
+            _do_export([], job_id=job_id)
     except Exception as e:  # noqa: BLE001
         with _LOCK:
-            JOB.update(state="error", error=str(e))
+            if job_id is None or JOB.get("job_id") == job_id:
+                JOB.update(state="error", error=str(e))
 
 
 # --------------------------------------------------------------------------- #
 # Exportacion (aplica decisiones de revision y genera entregables)
 # --------------------------------------------------------------------------- #
-def _do_export(decisions: list) -> dict:
-    with _LOCK:
-        result = JOB.get("result")
-    if not result:
-        raise RuntimeError("No hay una extracción que exportar.")
-    advertisers = result["advertisers"]
+def _do_export(decisions: list, job_id: str | None = None) -> dict:
+    """Exporta una sola vez por trabajo; reintentos devuelven lo ya creado."""
+    with _EXPORT_LOCK:
+        with _LOCK:
+            current_id = JOB.get("job_id")
+            if job_id is not None and current_id != job_id:
+                raise RuntimeError("El trabajo de revisión ya no está activo.")
+            if JOB.get("exported") and JOB.get("export_response"):
+                return copy.deepcopy(JOB["export_response"])
+            result = JOB.get("result")
+            if not result:
+                raise RuntimeError("No hay una extracción que exportar.")
+            advertisers = copy.deepcopy(result["advertisers"])
+            meta = copy.deepcopy(result["meta"])
+            meta["export_id"] = current_id or uuid.uuid4().hex
+            JOB["state"] = "exporting"
 
-    dropped = set()
-    for d in decisions:
-        i = d.get("index")
-        if not isinstance(i, int) or not (0 <= i < len(advertisers)):
-            continue
-        a = advertisers[i]
-        fields = d.get("fields") or {}
-        for k in ("brand", "sector", "website", "email", "phone", "ad_size"):
-            if k in fields and fields[k] is not None:
-                setattr(a, k, str(fields[k]).strip())
-        if d.get("state") == "drop":
-            dropped.add(i)
+        dropped = set()
+        for d in decisions:
+            i = d.get("index")
+            if not isinstance(i, int) or not (0 <= i < len(advertisers)):
+                continue
+            a = advertisers[i]
+            fields = d.get("fields") or {}
+            for k in ("brand", "sector", "website", "email", "phone", "ad_size"):
+                if k in fields and fields[k] is not None:
+                    setattr(a, k, str(fields[k]).strip())
+            if d.get("state") == "drop":
+                dropped.add(i)
 
-    kept = [a for i, a in enumerate(advertisers) if i not in dropped]
-    kept.sort(key=lambda x: (-float(getattr(x, "confidence", 0) or 0),
-                             (getattr(x, "brand", "") or "").lower()))
+        kept = [a for i, a in enumerate(advertisers) if i not in dropped]
+        kept.sort(key=lambda x: (-float(getattr(x, "confidence", 0) or 0),
+                                 (getattr(x, "brand", "") or "").lower()))
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    paths = export_results(kept, result["meta"], OUT_DIR, progress=_progress)
-    with _LOCK:
-        JOB["result"]["advertisers"] = kept
-        JOB["exported"] = True
-    # Abrir el informe HTML.
-    html = paths.get("html")
-    if html:
         try:
-            webbrowser.open("file://" + os.path.abspath(html))
-        except Exception:  # noqa: BLE001
-            pass
-    return {"paths": paths, "n": len(kept)}
+            os.makedirs(OUT_DIR, exist_ok=True)
+            paths = export_results(kept, meta, OUT_DIR, progress=_progress)
+            response = {"paths": paths, "n": len(kept), "job_id": current_id}
+            with _LOCK:
+                if JOB.get("job_id") != current_id:
+                    raise RuntimeError(
+                        "El trabajo cambió durante la exportación.")
+                JOB["result"]["advertisers"] = kept
+                JOB["result"]["meta"] = meta
+                JOB["exported"] = True
+                JOB["export_response"] = copy.deepcopy(response)
+                JOB["state"] = "done"
+        except Exception:
+            with _LOCK:
+                if JOB.get("job_id") == current_id:
+                    JOB["state"] = "done"
+            raise
+        html_path = paths.get("html")
+        if html_path:
+            try:
+                webbrowser.open("file://" + os.path.abspath(html_path))
+            except Exception:  # noqa: BLE001
+                pass
+        return response
 
 
 # --------------------------------------------------------------------------- #
@@ -365,20 +425,24 @@ class Handler(BaseHTTPRequestHandler):
                     "messages": msgs,
                     "summary": JOB["summary"],
                     "error": JOB["error"],
+                    "job_id": JOB["job_id"],
                 })
 
         if path == "/api/review":
             with _LOCK:
                 result = JOB.get("result")
                 exported = JOB.get("exported")
+                job_id = JOB.get("job_id")
             items = []
             meta = {}
             if result and not exported:
                 meta = result.get("meta", {}) or {}
+                include_all = result.get("analysis_status") == "parcial"
                 for i, a in enumerate(result["advertisers"]):
-                    if getattr(a, "review_flag", ""):
+                    if include_all or getattr(a, "review_flag", ""):
                         items.append(_adv_to_item(a, i))
-            return self._json({"items": items, "meta": meta})
+            return self._json({"items": items, "meta": meta,
+                               "job_id": job_id, "exported": exported})
 
         if path == "/api/page":
             try:
@@ -423,14 +487,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
 
         if path == "/api/extract":
-            with _LOCK:
-                if JOB["state"] == "running":
-                    return self._json({"error": "Ya hay una extracción en curso."}, 409)
             params = self._read_json()
-            _reset_job()
-            threading.Thread(target=_extract_worker, args=(params,),
+            job_id = _start_job()
+            if job_id is None:
+                return self._json({"error": "Ya hay una extracción en curso."}, 409)
+            threading.Thread(target=_extract_worker, args=(params, job_id),
                              daemon=True).start()
-            return self._json({"ok": True})
+            return self._json({"ok": True, "job_id": job_id})
 
         if path == "/api/upload":
             n = int(self.headers.get("Content-Length") or 0)
@@ -449,7 +512,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/export":
             data = self._read_json()
             try:
-                res = _do_export(data.get("decisions") or [])
+                res = _do_export(data.get("decisions") or [],
+                                 job_id=data.get("job_id"))
                 return self._json(res)
             except Exception as e:  # noqa: BLE001
                 return self._json({"error": str(e)}, 500)

@@ -15,6 +15,8 @@ import csv
 import json
 import html
 import datetime
+import tempfile
+import uuid
 from collections import Counter
 
 from core.sectors import normalize_sector
@@ -38,14 +40,32 @@ XL_AMBER = "FF9A6A10"
 XL_RED = "FFB8430F"
 
 
-def export_csv(advertisers, path: str):
+def _coverage_text(meta: dict) -> tuple[str, str]:
+    coverage = meta.get("cobertura") or {}
+    status = str(coverage.get("estado") or
+                 meta.get("estado_analisis") or "completo")
+    missing = ", ".join(str(p) for p in
+                        coverage.get("paginas_no_analizadas", []))
+    partial = ", ".join(str(p) for p in
+                        coverage.get("paginas_parciales", []))
+    details = []
+    if missing:
+        details.append(f"no analizadas: {missing}")
+    if partial:
+        details.append(f"respuesta parcial: {partial}")
+    return status, "; ".join(details)
+
+
+def export_csv(advertisers, path: str, meta: dict | None = None):
+    meta = meta or {}
+    status, coverage_details = _coverage_text(meta)
     cols = ["brand", "sector", "pages", "website", "email", "phone",
             "ad_size", "confidence", "method", "notes"]
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(["Marca", "Sector", "Paginas", "Web", "Email",
                     "Telefono", "Tamano anuncio", "Confianza",
-                    "Metodo", "Notas"])
+                    "Metodo", "Notas", "Estado analisis", "Cobertura"])
         for a in advertisers:
             d = a if isinstance(a, dict) else a.__dict__
             w.writerow([
@@ -53,6 +73,7 @@ def export_csv(advertisers, path: str):
                 ", ".join(str(p) for p in d["pages"]),
                 d["website"], d["email"], d["phone"], d["ad_size"],
                 f'{d["confidence"]:.0%}', d["method"], d["notes"],
+                status, coverage_details,
             ])
 
 
@@ -101,6 +122,7 @@ def export_xlsx(advertisers, path: str, meta: dict):
         ("Modo de deteccion", meta.get("modo", "—")),
         ("Fecha del analisis", fecha),
         ("Paginas de la revista", meta.get("paginas", "—")),
+        ("Estado del analisis", _coverage_text(meta)[0].upper()),
         ("", ""),
         ("Anunciantes detectados", n),
         ("Con sitio web", con_web),
@@ -110,6 +132,10 @@ def export_xlsx(advertisers, path: str, meta: dict):
     if fails:
         paginas = ", ".join("+".join(str(x) for x in fs) for fs in fails)
         rows.append(("Paginas NO analizadas (revisar)", paginas))
+    partials = meta.get("pliegos_parciales")
+    if partials:
+        paginas = ", ".join("+".join(str(x) for x in fs) for fs in partials)
+        rows.append(("Paginas con respuesta parcial (revisar)", paginas))
 
     r = 5
     for label, value in rows:
@@ -238,6 +264,7 @@ def export_html(advertisers, path: str, meta: dict):
         if any((a if isinstance(a, dict) else a.__dict__)[k]
                for k in ("email", "phone")))
     modo = meta.get("modo", "—")
+    analysis_status, coverage_details = _coverage_text(meta)
     fecha = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
     # Reparto por sector (categorias amplias normalizadas).
@@ -489,7 +516,8 @@ def export_html(advertisers, path: str, meta: dict):
   </div>
 
   <div class="aviso">
-    <strong>Revision recomendada.</strong> Esta lista es una deteccion
+    <strong>Estado del analisis: {html.escape(analysis_status.upper())}.</strong>
+    {html.escape(coverage_details) + '. ' if coverage_details else ''}Esta lista es una deteccion
     automatica. {"En modo gratis la separacion entre anuncio y reportaje editorial es aproximada: confirma los resultados de confianza media o baja." if modo.startswith("Heur") else "El modo IA es mas preciso, pero conviene una revision final humana antes de usar los datos comercialmente."}
   </div>
 
@@ -517,21 +545,48 @@ def export_html(advertisers, path: str, meta: dict):
 
 def export_all(advertisers, outdir: str, meta: dict) -> dict:
     os.makedirs(outdir, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    base = f"anunciantes_{stamp}"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    export_id = str(meta.get("export_id") or uuid.uuid4().hex[:8])
+    safe_id = "".join(c for c in export_id if c.isalnum() or c in "-_")[:32]
+    base = f"anunciantes_{stamp}_{safe_id or uuid.uuid4().hex[:8]}"
     paths = {
         "html": os.path.join(outdir, base + ".html"),
         "csv": os.path.join(outdir, base + ".csv"),
         "json": os.path.join(outdir, base + ".json"),
     }
-    export_html(advertisers, paths["html"], meta)
-    export_csv(advertisers, paths["csv"])
-    export_json(advertisers, paths["json"], meta)
-    # Excel solo si la libreria esta disponible (no rompe el resto si falta).
     if OPENPYXL_AVAILABLE:
         paths["xlsx"] = os.path.join(outdir, base + ".xlsx")
-        try:
-            export_xlsx(advertisers, paths["xlsx"], meta)
-        except Exception:  # noqa: BLE001
-            paths.pop("xlsx", None)
+
+    staged = {}
+    try:
+        for kind, suffix in (("html", ".html"), ("csv", ".csv"),
+                             ("json", ".json"), ("xlsx", ".xlsx")):
+            if kind not in paths:
+                continue
+            fd, tmp = tempfile.mkstemp(prefix=f".{base}_", suffix=suffix,
+                                       dir=outdir)
+            os.close(fd)
+            staged[kind] = tmp
+        export_html(advertisers, staged["html"], meta)
+        export_csv(advertisers, staged["csv"], meta)
+        export_json(advertisers, staged["json"], meta)
+        if "xlsx" in staged:
+            try:
+                export_xlsx(advertisers, staged["xlsx"], meta)
+            except Exception:  # noqa: BLE001
+                # Excel sigue siendo opcional: una limitacion de openpyxl no
+                # debe impedir publicar los tres formatos base.
+                os.remove(staged.pop("xlsx"))
+                paths.pop("xlsx", None)
+        # Solo publicar los nombres finales cuando todos los formatos existen.
+        for kind, tmp in staged.items():
+            os.replace(tmp, paths[kind])
+    except Exception:
+        for tmp in staged.values():
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+        raise
     return paths

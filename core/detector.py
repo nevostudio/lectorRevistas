@@ -22,6 +22,7 @@ import io
 import time
 import json
 import base64
+import math
 from dataclasses import dataclass, field, asdict
 
 try:
@@ -331,6 +332,8 @@ class AIDetector:
         self.usage = {"input": 0, "output": 0,
                       "cache_write": 0, "cache_read": 0}
         self.failed_spreads: list[list[int]] = []   # pliegos no recuperados
+        self.partial_spreads: list[list[int]] = []  # respuesta parcial/invalida
+        self.invalid_items: list[dict] = []          # registros IA rechazados
 
     def log(self, msg: str):
         self._progress(msg)
@@ -441,20 +444,26 @@ class AIDetector:
         return None, False
 
     @staticmethod
-    def _parse_ads_json(raw: str) -> list:
-        """Extrae la lista de anuncios de la respuesta, reparando JSON
-        truncado si hace falta. Devuelve la lista de dicts 'anuncios'."""
+    def _parse_ads_payload(raw: str) -> tuple[list, bool]:
+        """Devuelve (anuncios, json_valido).
+
+        `json_valido` permite distinguir una respuesta valida sin anuncios de
+        una respuesta rota. Si el JSON esta truncado se rescatan los objetos
+        completos, pero el segundo valor queda a False.
+        """
         raw = re.sub(r'^```(?:json)?|```$', '', raw, flags=re.M).strip()
-        # 1) Intento directo.
         try:
-            return json.loads(raw).get("anuncios") or []
-        except Exception:  # noqa: BLE001
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or not isinstance(
+                    payload.get("anuncios"), list):
+                return [], False
+            return payload["anuncios"], True
+        except (TypeError, ValueError, json.JSONDecodeError):
             pass
-        # 2) Reparacion: rescatar cada objeto {...} balanceado a cualquier
-        #    profundidad cuyo dict tenga "marca". Sirve cuando la respuesta se
-        #    corto a mitad de un objeto: los anteriores (completos) se salvan.
+
+        # Rescatar objetos completos de una respuesta truncada.
         objs = []
-        stack: list[int] = []   # indices de '{' abiertos
+        stack: list[int] = []
         in_str = False
         esc = False
         for i, ch in enumerate(raw):
@@ -475,14 +484,50 @@ class AIDetector:
                 if not stack:
                     continue
                 start = stack.pop()
-                frag = raw[start:i + 1]
                 try:
-                    o = json.loads(frag)
-                    if isinstance(o, dict) and o.get("marca"):
-                        objs.append(o)
-                except Exception:  # noqa: BLE001
-                    pass
-        return objs
+                    item = json.loads(raw[start:i + 1])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(item, dict) and item.get("marca"):
+                    objs.append(item)
+        return objs, False
+
+    @staticmethod
+    def _parse_ads_json(raw: str) -> list:
+        """Extrae la lista de anuncios de la respuesta, reparando JSON
+        truncado si hace falta. Devuelve la lista de dicts 'anuncios'."""
+        return AIDetector._parse_ads_payload(raw)[0]
+
+    @staticmethod
+    def _clean_text(value, *, required: bool = False) -> tuple[str, bool]:
+        """Normaliza texto del modelo y devuelve (valor, valido)."""
+        if value is None:
+            return "", not required
+        if isinstance(value, str):
+            value = value.strip()
+            return value, bool(value) if required else True
+        if not required and isinstance(value, (int, float)) \
+                and not isinstance(value, bool):
+            return str(value).strip(), True
+        return "", False
+
+    @staticmethod
+    def _clean_confidence(value) -> tuple[float, bool]:
+        """Valida 0..1 preservando el cero; nunca inventa una confianza alta."""
+        if isinstance(value, bool) or value is None:
+            return 0.0, False
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return 0.0, False
+        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            return 0.0, False
+        return confidence, True
+
+    @staticmethod
+    def _record_spread(target: list[list[int]], page_nums: list[int]):
+        if page_nums not in target:
+            target.append(list(page_nums))
 
     def _analyze_spread(self, spread_pages: list) -> list[Advertiser]:
         """Analiza un pliego de 1 o 2 paginas consecutivas y devuelve la lista
@@ -512,45 +557,73 @@ class AIDetector:
                         "text": f"{instr}\n\nTexto detectado (apoyo):\n"
                                 f"{text_support}"})
 
-        resp, _truncated = self._call_with_retry(content, page_nums)
+        resp, truncated = self._call_with_retry(content, page_nums)
         if resp is None:
-            self.failed_spreads.append(page_nums)
+            self._record_spread(self.failed_spreads, page_nums)
             return []
 
         raw = "".join(b.text for b in resp.content
                       if getattr(b, "type", "") == "text").strip()
-        items = self._parse_ads_json(raw)
+        items, valid_payload = self._parse_ads_payload(raw)
+        if truncated or not valid_payload:
+            self._record_spread(self.partial_spreads, page_nums)
         if not items:
-            # Respuesta no vacia pero sin anuncios parseables: registrar.
-            if raw and '"anuncios": []' not in raw and "'anuncios': []" \
-                    not in raw:
-                self.failed_spreads.append(page_nums)
-                self.log(f"IA: pliego {page_nums} sin anuncios parseables.")
+            if not valid_payload:
+                self.log(f"IA: pliego {page_nums} sin JSON valido.")
             return []
 
         out: list[Advertiser] = []
         valid_pages = set(page_nums)
         for item in items:
-            brand = (item.get("marca") or "").strip()
-            if not brand:
+            if not isinstance(item, dict):
+                self.invalid_items.append({"pages": page_nums,
+                                           "reason": "registro no es objeto"})
+                self._record_spread(self.partial_spreads, page_nums)
                 continue
+            brand, brand_ok = self._clean_text(item.get("marca"), required=True)
+            if not brand_ok:
+                self.invalid_items.append({"pages": page_nums,
+                                           "reason": "marca invalida"})
+                self._record_spread(self.partial_spreads, page_nums)
+                continue
+            item_partial = False
             try:
-                pg = int(item.get("pagina") or page_nums[0])
+                page_value = item.get("pagina")
+                pg = int(page_value) if page_value is not None else page_nums[0]
             except (TypeError, ValueError):
                 pg = page_nums[0]
+                item_partial = True
             if pg not in valid_pages:
                 pg = page_nums[0]
+                item_partial = True
+
+            fields = {}
+            for source, target in (("web", "website"), ("email", "email"),
+                                   ("telefono", "phone"), ("sector", "sector"),
+                                   ("tamano", "ad_size")):
+                fields[target], valid = self._clean_text(item.get(source))
+                item_partial = item_partial or not valid
+            confidence, confidence_ok = self._clean_confidence(
+                item.get("confianza"))
+            item_partial = item_partial or not confidence_ok
+            if item_partial:
+                self._record_spread(self.partial_spreads, page_nums)
+                self.invalid_items.append({"pages": page_nums,
+                                           "brand": brand,
+                                           "reason": "campos corregidos"})
             out.append(Advertiser(
                 brand=brand,
                 pages=[pg],
-                website=(item.get("web") or "").strip(),
-                email=(item.get("email") or "").strip(),
-                phone=(item.get("telefono") or "").strip(),
-                sector=(item.get("sector") or "").strip(),
-                ad_size=(item.get("tamano") or "").strip(),
-                confidence=float(item.get("confianza") or 0.8),
+                website=fields["website"],
+                email=fields["email"],
+                phone=fields["phone"],
+                sector=fields["sector"],
+                ad_size=fields["ad_size"],
+                confidence=confidence,
                 method="ia",
-                notes="Detectado por analisis visual con IA.",
+                notes=("Detectado por analisis visual con IA."
+                       if not item_partial else
+                       "Detectado por IA; revisar campos incompletos."),
             ))
         return out
 
@@ -602,6 +675,11 @@ class AIDetector:
             self.log(f"AVISO: {len(self.failed_spreads)} pliego(s) no "
                      f"analizados (paginas {paginas}). Revisar esas paginas "
                      f"a mano: puede haber anunciantes sin detectar.")
+        if self.partial_spreads:
+            paginas = ", ".join(
+                "+".join(str(n) for n in fs) for fs in self.partial_spreads)
+            self.log(f"AVISO: respuesta parcial o invalida en paginas "
+                     f"{paginas}. Revisar antes de exportar.")
 
         return sorted(merged.values(),
                       key=lambda a: (-a.confidence, a.brand))
@@ -631,9 +709,13 @@ def detect_advertisers(pages, use_ai: bool = False,
                 telemetry["cost_usd"] = det.estimated_cost_usd()
                 telemetry["usage"] = dict(det.usage)
                 telemetry["failed_spreads"] = list(det.failed_spreads)
+                telemetry["partial_spreads"] = list(det.partial_spreads)
+                telemetry["invalid_items"] = list(det.invalid_items)
             return result, "ia"
         except Exception as e:  # noqa: BLE001
             progress(f"Modo IA no disponible ({e}). Usando modo gratis.")
+            if telemetry is not None:
+                telemetry["fallback_reason"] = str(e)
     result = HeuristicDetector().detect(pages)
     return result, "heuristica"
 
@@ -718,6 +800,7 @@ REVIEW_REASONS_LABEL = {
     "short":    "Nombre demasiado corto",
     "weird":    "Caracteres extranos en el nombre",
     "variant":  "Posible variante de otra marca",
+    "partial_analysis": "Procede de un analisis parcial",
 }
 
 

@@ -16,6 +16,38 @@ from core.report import export_all
 from core.logs import tee
 
 
+ANALYSIS_COMPLETE = "completo"
+ANALYSIS_PARTIAL = "parcial"
+ANALYSIS_FAILED = "fallido"
+
+
+def _spread_pages(spreads) -> list[int]:
+    return sorted({int(page) for spread in (spreads or []) for page in spread})
+
+
+def _build_coverage(total_pages: int, mode: str, telemetry: dict) -> dict:
+    failed_pages = _spread_pages(telemetry.get("failed_spreads"))
+    partial_pages = _spread_pages(telemetry.get("partial_spreads"))
+    analyzed_pages = max(0, total_pages - len(failed_pages))
+    fallback = bool(telemetry.get("fallback_reason"))
+
+    if mode == "ia" and total_pages > 0 and analyzed_pages == 0:
+        status = ANALYSIS_FAILED
+    elif failed_pages or partial_pages or telemetry.get("invalid_items") or fallback:
+        status = ANALYSIS_PARTIAL
+    else:
+        status = ANALYSIS_COMPLETE
+    return {
+        "estado": status,
+        "paginas_totales": total_pages,
+        "paginas_analizadas": analyzed_pages,
+        "paginas_no_analizadas": failed_pages,
+        "paginas_parciales": partial_pages,
+        "modo_solicitado": "ia" if mode == "ia" or fallback else "heuristica",
+        "fallback_heuristica": fallback,
+    }
+
+
 def run_extraction(url: str | None = None,
                     pdf_path: str | None = None,
                     use_ai: bool = False,
@@ -62,6 +94,29 @@ def run_extraction(url: str | None = None,
         pages = builder.from_images(src_imgs, run_ocr=run_ocr)
     meta["paginas"] = len(pages)
     progress(f"Total de paginas a analizar: {len(pages)}")
+    if not pages:
+        coverage = {
+            "estado": ANALYSIS_FAILED,
+            "paginas_totales": 0,
+            "paginas_analizadas": 0,
+            "paginas_no_analizadas": [],
+            "paginas_parciales": [],
+            "modo_solicitado": "ia" if use_ai else "heuristica",
+            "fallback_heuristica": False,
+        }
+        meta["estado_analisis"] = ANALYSIS_FAILED
+        meta["cobertura"] = coverage
+        progress("ERROR: la revista no contiene paginas procesables.")
+        return {
+            "ok": False,
+            "error": "La revista no contiene paginas procesables.",
+            "analysis_status": ANALYSIS_FAILED,
+            "advertisers": [],
+            "pages": [],
+            "meta": meta,
+            "viewer": viewer,
+            "workdir": workdir,
+        }
 
     # --- Fase 3: detectar anunciantes -------------------------------------
     telemetry: dict = {}
@@ -74,15 +129,52 @@ def run_extraction(url: str | None = None,
         meta["coste_usd"] = telemetry["cost_usd"]
     if telemetry.get("failed_spreads"):
         meta["pliegos_fallidos"] = telemetry["failed_spreads"]
+    if telemetry.get("partial_spreads"):
+        meta["pliegos_parciales"] = telemetry["partial_spreads"]
+    if telemetry.get("invalid_items"):
+        meta["registros_ia_corregidos"] = len(telemetry["invalid_items"])
+    if telemetry.get("fallback_reason"):
+        meta["fallback_heuristica"] = True
+        meta["aviso_fallback"] = telemetry["fallback_reason"]
+
+    coverage = _build_coverage(len(pages), modo, telemetry)
+    meta["estado_analisis"] = coverage["estado"]
+    meta["cobertura"] = coverage
     progress(f"Anunciantes detectados: {len(advertisers)}")
+
+    if coverage["estado"] == ANALYSIS_FAILED:
+        progress("ERROR: ninguna pagina pudo analizarse con IA.")
+        return {
+            "ok": False,
+            "error": "No se pudo analizar ninguna pagina con IA.",
+            "analysis_status": ANALYSIS_FAILED,
+            "advertisers": advertisers,
+            "pages": pages,
+            "meta": meta,
+            "viewer": viewer,
+            "workdir": workdir,
+        }
 
     # --- Fase 3.5: marcar dudosos para revision manual --------------------
     n_flag = mark_for_review(advertisers, meta.get("titulo", ""))
+    if coverage["estado"] == ANALYSIS_PARTIAL:
+        partial_pages = set(coverage["paginas_parciales"])
+        for advertiser in advertisers:
+            if partial_pages.intersection(advertiser.pages) or \
+                    coverage["paginas_no_analizadas"] or \
+                    coverage["fallback_heuristica"]:
+                reasons = [x for x in advertiser.review_flag.split(",") if x]
+                if "partial_analysis" not in reasons:
+                    reasons.append("partial_analysis")
+                advertiser.review_flag = ",".join(reasons)
+        n_flag = sum(bool(a.review_flag) for a in advertisers)
+        progress("AVISO: analisis parcial; requiere revision antes de exportar.")
     if n_flag:
         progress(f"{n_flag} anunciante(s) marcado(s) para revision manual.")
 
     return {
         "ok": True,
+        "analysis_status": coverage["estado"],
         "advertisers": advertisers,
         "pages": pages,
         "meta": meta,
@@ -143,8 +235,13 @@ def run_pipeline(url: str | None = None,
                              progress=progress)
     if not result.get("ok"):
         return result
+    if result.get("analysis_status") != ANALYSIS_COMPLETE:
+        result["ok"] = False
+        result["error"] = ("El analisis es parcial y necesita revision "
+                           "antes de exportar.")
+        return result
     paths = export_results(result["advertisers"], result["meta"], outdir,
-                            progress=progress)
+                           progress=progress)
     result["paths"] = paths
     # No exponemos las paginas en el wrapper antiguo (compatibilidad).
     result.pop("pages", None)

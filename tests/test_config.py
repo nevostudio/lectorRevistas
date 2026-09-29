@@ -37,6 +37,8 @@ def test_olvidar_clave_conserva_resto():
     assert config.last_url() == "https://x.com"
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows no implementa permisos POSIX con chmod")
 def test_permisos_restrictivos():
     config.remember_api_key("sk-x")
     mode = stat.S_IMODE(os.stat(config._CONFIG_PATH).st_mode)

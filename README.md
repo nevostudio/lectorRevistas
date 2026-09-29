@@ -28,6 +28,17 @@ El proceso tiene cuatro fases:
 4. **Informe** — Genera `anunciantes_FECHA.html` (informe visual),
    `.csv` (para Excel) y `.json` (para integraciones) en la carpeta `output/`.
 
+Cada ejecucion registra su cobertura con uno de estos estados:
+
+- **completo**: todas las paginas se analizaron correctamente;
+- **parcial**: hay paginas o campos que necesitan revision;
+- **fallido**: no se pudo analizar ninguna pagina o el documento no contiene
+  paginas procesables.
+
+Los informes usan un identificador unico y se escriben primero en archivos
+temporales, para que dos exportaciones consecutivas no se sobrescriban ni
+dejen entregables a medias.
+
 ---
 
 ## Instalación
@@ -65,6 +76,13 @@ run_pipeline(url="https://www.proarquitectura.es/proarquitectura-206-...")
 
 # Desde un PDF local, modo IA
 run_pipeline(pdf_path="revista.pdf", use_ai=True, api_key="sk-ant-...")
+```
+
+La CLI no exporta automaticamente un analisis parcial. Tras revisar la
+cobertura, se puede aceptar de forma explicita con `--permitir-parcial`:
+
+```bash
+python cli.py --pdf revista.pdf --ia --permitir-parcial
 ```
 
 ---

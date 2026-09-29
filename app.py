@@ -324,8 +324,15 @@ class App(tk.Tk):
         flagged = [a for a in advertisers if a.review_flag]
         n_total = len(advertisers)
         n_flag = len(flagged)
+        status = r.get("analysis_status", "completo")
+        if status == "parcial" and not advertisers:
+            self._log("\n>>> ANALISIS PARCIAL SIN RESULTADOS. Revisa las "
+                      "paginas pendientes antes de generar un informe.")
+            self.result_btn.config(state="disabled")
+            return
         if n_flag:
-            self._log(f"\n>>> {n_total} anunciantes detectados; "
+            prefix = "Analisis parcial; " if status == "parcial" else ""
+            self._log(f"\n>>> {prefix}{n_total} anunciantes detectados; "
                       f"{n_flag} necesitan revision.")
             self.result_btn.config(
                 text=f"REVISAR  {n_flag}  CASOS DUDOSOS",

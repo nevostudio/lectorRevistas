@@ -90,6 +90,7 @@ function renderSteps(state) {
 renderSteps(-1);
 
 let polling = false;
+let activeJobId = null;
 $('#extractBtn').addEventListener('click', startExtraction);
 
 async function startExtraction() {
@@ -110,7 +111,7 @@ async function startExtraction() {
   $('#pctLabel').textContent = '0%'; $('#pfill').style.width = '4%';
 
   try {
-    await api('/api/extract', {
+    const started = await api('/api/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -118,6 +119,7 @@ async function startExtraction() {
         remember: $('#rememberKey').checked,
       }),
     });
+    activeJobId = started.job_id || null;
   } catch (err) {
     toast('No se pudo iniciar: ' + err.message, 'err');
     btn.disabled = false; btn.style.opacity = 1;
@@ -155,15 +157,21 @@ async function pollStatus() {
   }
   // done
   const s = st.summary || { total: 0, flagged: 0 };
-  $('#progState').textContent = 'Extracción finalizada correctamente.';
+  activeJobId = st.job_id || activeJobId;
+  const partial = s.analysis_status === 'parcial';
+  $('#progState').textContent = partial
+    ? 'Extracción parcial: revisa las páginas pendientes.'
+    : 'Extracción finalizada correctamente.';
   $('#rbTitle').textContent = `${s.total} anunciantes extraídos`;
-  $('#rbSub').textContent = s.flagged
-    ? `${s.total - s.flagged} con confianza alta · ${s.flagged} marcados para revisar`
+  $('#rbSub').textContent = partial
+    ? 'El informe no se generará hasta que revises el resultado parcial.'
+    : s.flagged
+    ? `${s.flagged} marcados para revisar antes de entregar`
     : 'Ninguno requiere revisión manual';
   const goBtn = $('#goReview');
-  if (s.flagged) {
+  if (s.flagged || partial) {
     goBtn.style.display = '';
-    goBtn.textContent = 'Revisar dudosos';
+    goBtn.textContent = partial ? 'Revisar resultado parcial' : 'Revisar dudosos';
   } else {
     goBtn.style.display = 'none';
   }
@@ -172,20 +180,28 @@ async function pollStatus() {
 $('#goReview').addEventListener('click', () => showScreen('revision'));
 
 /* ============ Revisión ============ */
-let review = { items: [], states: [], cur: 0, loaded: false };
+let review = { items: [], states: [], cur: 0, loaded: false, jobId: null };
 
 async function refreshReview() {
   try {
     const data = await api('/api/review');
-    review.items = data.items || [];
     review.meta = data.meta || {};
-    if (!review.statesValid || review.states.length !== review.items.length) {
+    activeJobId = data.job_id || activeJobId;
+    if (data.exported) {
+      review.items = [];
+      review.states = [];
+      review.jobId = data.job_id || null;
+    } else if (!review.loaded || review.jobId !== data.job_id) {
+      review.items = data.items || [];
       review.states = review.items.map(() => 'pending');
-      review.statesValid = true;
+      review.jobId = data.job_id || null;
+      review.cur = 0;
     }
-    review.cur = 0;
     review.loaded = true;
-  } catch { review.items = []; }
+  } catch {
+    review.items = [];
+    review.loaded = false;
+  }
 
   const has = review.items.length > 0;
   $('#reviewDetail').style.display = has ? '' : 'none';
@@ -255,6 +271,15 @@ function saveEdits() {
   d.ad_size = $('#fTam').value.trim();
 }
 
+// Mantener el borrador en memoria mientras se escribe. Asi, cambiar de
+// pantalla y volver a Revision no restaura los valores recibidos del servidor.
+['fMarca', 'fSector', 'fWeb', 'fEmail', 'fTel', 'fTam'].forEach(id => {
+  $('#' + id).addEventListener('input', () => {
+    saveEdits();
+    if (id === 'fMarca') renderQueue();
+  });
+});
+
 function advance() {
   const next = review.items.findIndex((_, i) => review.states[i] === 'pending');
   if (next === -1) { renderQueue(); return; }
@@ -283,10 +308,9 @@ $('#exportBtn').addEventListener('click', async () => {
     }));
     const r = await api('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decisions }),
+      body: JSON.stringify({ decisions, job_id: review.jobId || activeJobId }),
     });
     toast(`Informe generado · ${r.n} anunciantes`, 'ok');
-    review.statesValid = false;
     await refreshReview();
     loadLibrary();
   } catch (err) {

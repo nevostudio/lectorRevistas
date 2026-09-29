@@ -42,6 +42,8 @@ def main(argv=None) -> int:
                     help="Descarta anunciantes por debajo de este umbral (0-1)")
     ap.add_argument("--no-biblioteca", action="store_true",
                     help="No guardar el analisis en la biblioteca local")
+    ap.add_argument("--permitir-parcial", action="store_true",
+                    help="Exporta aunque haya paginas pendientes de revision")
     args = ap.parse_args(argv)
 
     api_key = args.api_key or config.api_key()
@@ -60,6 +62,12 @@ def main(argv=None) -> int:
         print("ERROR:", result.get("error", "fallo desconocido"),
               file=sys.stderr)
         return 1
+    if result.get("analysis_status") == "parcial" and \
+            not args.permitir_parcial:
+        print("ERROR: el analisis es parcial. Revisa las paginas pendientes "
+              "o repite con --permitir-parcial para exportarlo expresamente.",
+              file=sys.stderr)
+        return 2
 
     meta = result["meta"]
     if args.titulo:
