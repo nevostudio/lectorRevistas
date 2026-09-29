@@ -81,13 +81,17 @@ class PageBuilder:
         doc.close()
         return pages
 
-    def from_images(self, image_paths: list[str],
-                     run_ocr: bool = True) -> list[Page]:
+    def from_images(self, image_paths: list[str], run_ocr: bool = True,
+                    page_numbers: list[int] | None = None) -> list[Page]:
+        if page_numbers is not None and len(page_numbers) != len(image_paths):
+            raise ValueError("La numeracion no coincide con las imagenes.")
         pages: list[Page] = []
         for i, src in enumerate(image_paths, 1):
+            number = page_numbers[i - 1] if page_numbers is not None else i
             ocr_text = self._ocr(src) if run_ocr else ""
-            pages.append(Page(number=i, image_path=src, ocr_text=ocr_text))
-            self.log(f"Pagina {i}/{len(image_paths)} procesada.")
+            pages.append(Page(number=number, image_path=src,
+                              ocr_text=ocr_text))
+            self.log(f"Pagina {number} ({i}/{len(image_paths)}) procesada.")
         return pages
 
     def _ocr(self, img_path: str) -> str:

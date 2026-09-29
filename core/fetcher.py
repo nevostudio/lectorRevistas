@@ -21,10 +21,12 @@ import os
 import re
 import time
 import json
+import hashlib
+import html as html_lib
 import shutil
 import tempfile
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qs
 
 import requests
 
@@ -63,6 +65,8 @@ class FetchResult:
     kind: str                       # "pdf" | "images" | "none"
     pdf_path: str | None = None
     image_paths: list[str] = field(default_factory=list)
+    page_numbers: list[int] = field(default_factory=list)
+    page_manifest: list[dict] = field(default_factory=list)
     viewer: str | None = None       # nombre del visor detectado, si lo hay
     workdir: str = ""
     notes: list[str] = field(default_factory=list)
@@ -86,6 +90,9 @@ class MagazineFetcher:
         os.makedirs(self.workdir, exist_ok=True)
         self.headless = headless
         self._progress = progress or (lambda m: None)
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": USER_AGENT})
+        self._last_image_manifest: list[dict] = []
 
     def log(self, msg: str):
         self._progress(msg)
@@ -97,7 +104,16 @@ class MagazineFetcher:
         self.log(f"Analizando la pagina: {url}")
         result = FetchResult(source_url=url, kind="none", workdir=self.workdir)
 
-        html = self._get_html_static(url)
+        response = self._get_static_response(url)
+        if response is not None and self._looks_like_pdf(response, url):
+            path = self._save_pdf_response(response)
+            if path:
+                result.kind = "pdf"
+                result.pdf_path = path
+                result.notes.append("PDF directo detectado por contenido.")
+                return result
+
+        html = response.text if response is not None else None
         if html:
             # 1) PDF directo en el HTML estatico
             pdf_url = self._find_pdf_in_html(html, url)
@@ -145,23 +161,47 @@ class MagazineFetcher:
     # Descarga estatica de HTML
     # ------------------------------------------------------------------ #
     def _get_html_static(self, url: str) -> str | None:
+        response = self._get_static_response(url)
+        return response.text if response is not None else None
+
+    def _get_static_response(self, url: str):
         try:
-            r = requests.get(url, headers={"User-Agent": USER_AGENT},
-                              timeout=30)
+            r = self.session.get(url, timeout=30)
             r.raise_for_status()
-            return r.text
+            return r
         except Exception as e:  # noqa: BLE001
             self.log(f"No se pudo descargar el HTML estatico: {e}")
             return None
+
+    @staticmethod
+    def _looks_like_pdf(response, url: str = "") -> bool:
+        ctype = response.headers.get("Content-Type", "").lower()
+        path = urlparse(url or getattr(response, "url", "")).path.lower()
+        return ("application/pdf" in ctype or path.endswith(".pdf") or
+                bytes(response.content[:5]) == b"%PDF-")
+
+    def _save_pdf_response(self, response) -> str | None:
+        content = response.content
+        if not content.startswith(b"%PDF-") and "pdf" not in \
+                response.headers.get("Content-Type", "").lower():
+            return None
+        path = os.path.join(self.workdir, "revista.pdf")
+        with open(path, "wb") as f:
+            f.write(content)
+        self.log(f"PDF descargado: {len(content)//1024} KB")
+        return path
 
     # ------------------------------------------------------------------ #
     # Deteccion de PDF en el HTML
     # ------------------------------------------------------------------ #
     @staticmethod
     def _find_pdf_in_html(html: str, base_url: str) -> str | None:
-        # Cualquier enlace .pdf
-        candidates = re.findall(r'["\']([^"\']+?\.pdf)["\']', html, re.I)
+        # Incluye href/src y URLs incrustadas en configuraciones JavaScript.
+        candidates = re.findall(r'["\']([^"\']+)["\']', html, re.I)
         for c in candidates:
+            c = html_lib.unescape(c)
+            if not urlparse(c).path.lower().endswith(".pdf"):
+                continue
             # Evitar PDFs de documentos legales / formularios
             if any(bad in c.lower() for bad in
                    ("politica", "aviso", "privacid", "cookie")):
@@ -174,9 +214,12 @@ class MagazineFetcher:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _find_embedded_viewer(html: str, base_url: str):
+        if re.search(r'(?:_3d-flip-book|fb3d|3dflipbook)', html, re.I):
+            return base_url, "3D FlipBook"
         # iframes y enlaces que apunten a servicios conocidos
         urls = re.findall(r'(?:src|href)=["\']([^"\']+)["\']', html, re.I)
         for u in urls:
+            u = html_lib.unescape(u)
             full = urljoin(base_url, u)
             host = urlparse(full).netloc.lower()
             for domain, name in KNOWN_VIEWERS.items():
@@ -189,19 +232,13 @@ class MagazineFetcher:
     # ------------------------------------------------------------------ #
     def _download_pdf(self, pdf_url: str) -> str | None:
         try:
-            r = requests.get(pdf_url, headers={"User-Agent": USER_AGENT},
-                             timeout=120, stream=True)
+            r = self.session.get(pdf_url, timeout=120)
             r.raise_for_status()
-            ctype = r.headers.get("Content-Type", "").lower()
-            if "pdf" not in ctype and not pdf_url.lower().endswith(".pdf"):
+            if not self._looks_like_pdf(r, pdf_url):
+                ctype = r.headers.get("Content-Type", "").lower()
                 self.log(f"El recurso no parece un PDF ({ctype}).")
                 return None
-            path = os.path.join(self.workdir, "revista.pdf")
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=65536):
-                    f.write(chunk)
-            self.log(f"PDF descargado: {os.path.getsize(path)//1024} KB")
-            return path
+            return self._save_pdf_response(r)
         except Exception as e:  # noqa: BLE001
             self.log(f"Error descargando el PDF: {e}")
             return None
@@ -230,9 +267,11 @@ class MagazineFetcher:
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
-            page = browser.new_page(user_agent=USER_AGENT,
-                                    viewport={"width": 1600, "height": 1200})
-            page.on("response", handle_response)
+            context = browser.new_context(user_agent=USER_AGENT,
+                                          viewport={"width": 1600,
+                                                    "height": 1200})
+            context.on("response", handle_response)
+            page = context.new_page()
 
             try:
                 page.goto(url, wait_until="networkidle", timeout=60000)
@@ -242,6 +281,8 @@ class MagazineFetcher:
             # Intentar entrar al visor "Leer Online"
             self._click_read_online(page)
             time.sleep(3)
+            if context.pages:
+                page = context.pages[-1]
 
             # Recorrer el flipbook pasando paginas para forzar la carga
             self._page_through_flipbook(page)
@@ -255,6 +296,11 @@ class MagazineFetcher:
                 except Exception:  # noqa: BLE001
                     pass
 
+            for cookie in context.cookies():
+                self.session.cookies.set(
+                    cookie["name"], cookie["value"],
+                    domain=cookie.get("domain"), path=cookie.get("path", "/"))
+            self.session.headers.update({"Referer": page.url})
             browser.close()
 
         # Prioridad 1: PDF capturado
@@ -268,10 +314,15 @@ class MagazineFetcher:
 
         # Prioridad 2: imagenes de paginas capturadas
         if captured_images:
-            paths = self._download_images(sorted(captured_images))
+            ordered = sorted(captured_images, key=self._image_sort_key)
+            paths = self._download_images(ordered)
             if paths:
                 result.kind = "images"
                 result.image_paths = paths
+                result.page_manifest = list(self._last_image_manifest)
+                result.page_numbers = [m["page_number"]
+                                       for m in result.page_manifest
+                                       if m["status"] == "ok"]
                 result.notes.append(
                     f"{len(paths)} paginas capturadas como imagen.")
                 return result
@@ -295,17 +346,20 @@ class MagazineFetcher:
             "a:has-text('Leer')", "[class*='flip']", "[class*='viewer']",
         ]
         first_clicked = False
-        for sel in selectors:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    el.click(timeout=3000)
-                    self.log(f"Pulsado: {sel}")
-                    time.sleep(2)
-                    first_clicked = True
-                    break
-            except Exception:  # noqa: BLE001
-                continue
+        for root in self._interaction_roots(page):
+            for sel in selectors:
+                try:
+                    el = root.query_selector(sel)
+                    if el:
+                        el.click(timeout=3000)
+                        self.log(f"Pulsado: {sel}")
+                        time.sleep(2)
+                        first_clicked = True
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if first_clicked:
+                break
 
         if not first_clicked:
             return
@@ -315,31 +369,44 @@ class MagazineFetcher:
             "._3d-flip-book", ".fb3d-thumbnail", ".thumbnail",
             "[class*='flip-book']",
         ]
-        for sel in container_selectors:
-            try:
-                el = page.query_selector(sel)
-                if el and el.is_visible():
-                    el.click(timeout=3000)
-                    self.log(f"Visor abierto: {sel}")
-                    time.sleep(2)
-                    return
-            except Exception:  # noqa: BLE001
-                continue
+        for root in self._interaction_roots(page):
+            for sel in container_selectors:
+                try:
+                    el = root.query_selector(sel)
+                    if el and el.is_visible():
+                        el.click(timeout=3000)
+                        self.log(f"Visor abierto: {sel}")
+                        time.sleep(2)
+                        return
+                except Exception:  # noqa: BLE001
+                    continue
+
+    @staticmethod
+    def _interaction_roots(page):
+        """Pagina e iframes: muchos lectores alojan los controles dentro."""
+        roots = [page]
+        for frame in page.frames:
+            if frame not in roots:
+                roots.append(frame)
+        return roots
 
     def _page_through_flipbook(self, page, max_pages: int = 80):
         """Pasa paginas del flipbook para forzar la carga de cada imagen."""
         for i in range(max_pages):
             advanced = False
-            for sel in ["[class*='next']", "[aria-label*='next']",
-                        "[aria-label*='Siguiente']", ".nav-next"]:
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        el.click(timeout=1500)
-                        advanced = True
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
+            for root in self._interaction_roots(page):
+                for sel in ["[class*='next']", "[aria-label*='next']",
+                            "[aria-label*='Siguiente']", ".nav-next"]:
+                    try:
+                        el = root.query_selector(sel)
+                        if el and el.is_visible():
+                            el.click(timeout=1500)
+                            advanced = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if advanced:
+                    break
             if not advanced:
                 # Probar con tecla de flecha derecha
                 try:
@@ -351,24 +418,73 @@ class MagazineFetcher:
             if not advanced:
                 break
 
+    @staticmethod
+    def _page_number_from_url(url: str) -> int | None:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        for key in ("page", "p", "pagina", "slide"):
+            value = query.get(key, [""])[0]
+            if str(value).isdigit() and int(value) > 0:
+                return int(value)
+        matches = re.findall(
+            r'(?:page|pagina|slide|p)[_\-/]*(\d+)', parsed.path, re.I)
+        if matches:
+            return int(matches[-1])
+        stem_numbers = re.findall(r'(\d+)', os.path.basename(parsed.path))
+        return int(stem_numbers[-1]) if stem_numbers else None
+
+    @classmethod
+    def _image_sort_key(cls, url: str):
+        number = cls._page_number_from_url(url)
+        return (number is None, number or 0, url.lower())
+
+    @staticmethod
+    def _safe_source_url(url: str) -> str:
+        """Conserva la procedencia sin guardar tokens de acceso del query."""
+        parsed = urlparse(url)
+        return parsed._replace(query="", fragment="").geturl()
+
     def _download_images(self, urls: list[str]) -> list[str]:
         paths = []
+        manifest = []
+        hashes = set()
+        used_numbers = set()
         img_dir = os.path.join(self.workdir, "pages")
         os.makedirs(img_dir, exist_ok=True)
         for idx, u in enumerate(urls, 1):
             try:
-                r = requests.get(u, headers={"User-Agent": USER_AGENT},
-                                 timeout=60)
+                r = self.session.get(u, timeout=60)
                 r.raise_for_status()
+                content = r.content
+                digest = hashlib.sha256(content).hexdigest()
+                if digest in hashes:
+                    self.log(f"Imagen duplicada omitida: {u}")
+                    continue
+                hashes.add(digest)
+                page_number = self._page_number_from_url(u) or idx
+                while page_number in used_numbers:
+                    page_number += 1
+                used_numbers.add(page_number)
                 ext = ".jpg"
                 if "png" in r.headers.get("Content-Type", ""):
                     ext = ".png"
-                path = os.path.join(img_dir, f"page_{idx:03d}{ext}")
+                path = os.path.join(img_dir, f"page_{page_number:03d}{ext}")
                 with open(path, "wb") as f:
-                    f.write(r.content)
+                    f.write(content)
                 paths.append(path)
+                manifest.append({"page_number": page_number,
+                                 "source_url": self._safe_source_url(u),
+                                 "sha256": digest,
+                                 "bytes": len(content),
+                                 "status": "ok"})
             except Exception as e:  # noqa: BLE001
                 self.log(f"No se pudo descargar imagen {idx}: {e}")
+                manifest.append({"page_number":
+                                 self._page_number_from_url(u) or idx,
+                                 "source_url": self._safe_source_url(u),
+                                 "status": "failed",
+                                 "error": type(e).__name__})
+        self._last_image_manifest = manifest
         return paths
 
 

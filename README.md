@@ -39,6 +39,22 @@ Los informes usan un identificador unico y se escriben primero en archivos
 temporales, para que dos exportaciones consecutivas no se sobrescriban ni
 dejen entregables a medias.
 
+### Fuentes y lectores web
+
+La entrada se normaliza siempre a paginas numeradas, independientemente de si
+procede de un PDF local, un PDF directo, un PDF descubierto en la red del
+visor o imagenes cargadas por un flipbook. En lectores web, el programa:
+
+- reutiliza las cookies del navegador para descargar recursos protegidos;
+- ordena `page1`, `page2`, `page10` por su numero real;
+- elimina imagenes duplicadas por contenido;
+- conserva los huecos de numeracion en vez de renumerar las paginas;
+- guarda un manifiesto con procedencia, tamano, hash y estado;
+- marca el analisis como parcial si alguna pagina no pudo descargarse.
+
+El recorrido especial de 3D FlipBook sigue abriendo “Leer Online”, activa la
+miniatura del libro y avanza por el visor para provocar la carga de paginas.
+
 ---
 
 ## Instalación

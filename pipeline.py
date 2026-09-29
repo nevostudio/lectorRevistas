@@ -26,7 +26,9 @@ def _spread_pages(spreads) -> list[int]:
 
 
 def _build_coverage(total_pages: int, mode: str, telemetry: dict) -> dict:
-    failed_pages = _spread_pages(telemetry.get("failed_spreads"))
+    failed_pages = sorted(set(
+        _spread_pages(telemetry.get("failed_spreads")) +
+        _spread_pages(telemetry.get("source_failed_pages"))))
     partial_pages = _spread_pages(telemetry.get("partial_spreads"))
     analyzed_pages = max(0, total_pages - len(failed_pages))
     fallback = bool(telemetry.get("fallback_reason"))
@@ -67,6 +69,7 @@ def run_extraction(url: str | None = None,
     fetcher = MagazineFetcher(progress=progress)
     workdir = fetcher.workdir
     meta = {"url": url or "", "modo": "", "titulo": "Revista", "paginas": "—"}
+    source_manifest = []
 
     # --- Fase 1: conseguir la revista -------------------------------------
     if pdf_path and os.path.exists(pdf_path):
@@ -79,6 +82,8 @@ def run_extraction(url: str | None = None,
         kind = res.kind
         src_pdf = res.pdf_path
         src_imgs = res.image_paths
+        src_page_numbers = res.page_numbers
+        source_manifest = res.page_manifest
         viewer = res.viewer
         for note in res.notes:
             progress("· " + note)
@@ -91,7 +96,10 @@ def run_extraction(url: str | None = None,
     if kind == "pdf":
         pages = builder.from_pdf(src_pdf, run_ocr=run_ocr and not use_ai)
     else:
-        pages = builder.from_images(src_imgs, run_ocr=run_ocr)
+        pages = builder.from_images(src_imgs, run_ocr=run_ocr,
+                                    page_numbers=src_page_numbers or None)
+        if source_manifest:
+            meta["manifiesto_paginas"] = source_manifest
     meta["paginas"] = len(pages)
     progress(f"Total de paginas a analizar: {len(pages)}")
     if not pages:
@@ -119,7 +127,11 @@ def run_extraction(url: str | None = None,
         }
 
     # --- Fase 3: detectar anunciantes -------------------------------------
-    telemetry: dict = {}
+    source_failed = [m["page_number"] for m in source_manifest
+                     if m.get("status") == "failed"]
+    telemetry: dict = {
+        "source_failed_pages": [[number] for number in source_failed],
+    }
     advertisers, modo = detect_advertisers(
         pages, use_ai=use_ai, api_key=api_key, progress=progress,
         telemetry=telemetry)
@@ -137,7 +149,9 @@ def run_extraction(url: str | None = None,
         meta["fallback_heuristica"] = True
         meta["aviso_fallback"] = telemetry["fallback_reason"]
 
-    coverage = _build_coverage(len(pages), modo, telemetry)
+    expected_pages = len(pages) + len(set(source_failed) -
+                                      {p.number for p in pages})
+    coverage = _build_coverage(expected_pages, modo, telemetry)
     meta["estado_analisis"] = coverage["estado"]
     meta["cobertura"] = coverage
     progress(f"Anunciantes detectados: {len(advertisers)}")
