@@ -45,6 +45,11 @@ La entrada se normaliza siempre a paginas numeradas, independientemente de si
 procede de un PDF local, un PDF directo, un PDF descubierto en la red del
 visor o imagenes cargadas por un flipbook. En lectores web, el programa:
 
+- ejecuta una comprobacion previa de integridad antes de detectar anunciantes;
+- compara paginas esperadas y obtenidas cuando el visor publica el total;
+- detecta huecos, descargas fallidas, archivos danados y numeros duplicados;
+- detiene el modo IA si la fuente esta incompleta para no consumir credito;
+
 - reutiliza las cookies del navegador para descargar recursos protegidos;
 - ordena `page1`, `page2`, `page10` por su numero real;
 - elimina imagenes duplicadas por contenido;

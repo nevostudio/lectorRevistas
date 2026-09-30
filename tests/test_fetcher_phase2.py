@@ -78,6 +78,38 @@ def test_page_builder_respeta_numeracion_original(tmp_path):
     assert [page.number for page in pages] == [1, 10]
 
 
+def test_lee_total_de_paginas_desde_contador_del_visor():
+    class Element:
+        def inner_text(self, **_kwargs):
+            return "12 / 166"
+
+        def get_attribute(self, _name):
+            return None
+
+    class Page:
+        frames = []
+
+        def query_selector_all(self, selector):
+            return [Element()] if selector == "[class*='page-count']" else []
+
+    assert MagazineFetcher._detect_expected_pages(Page()) == 166
+
+
+def test_imagen_duplicada_queda_registrada_en_manifiesto(monkeypatch, tmp_path):
+    fetcher = MagazineFetcher(workdir=str(tmp_path))
+    urls = ["https://cdn.test/page1.jpg", "https://cdn.test/page2.jpg"]
+    monkeypatch.setattr(
+        fetcher.session, "get",
+        lambda url, **_kwargs: FakeResponse(b"misma-imagen", "image/jpeg", url),
+    )
+
+    paths = fetcher._download_images(urls)
+
+    assert len(paths) == 1
+    assert fetcher._last_image_manifest[1]["status"] == "duplicate"
+    assert fetcher._last_image_manifest[1]["duplicate_of"] == 1
+
+
 def test_hueco_de_origen_convierte_cobertura_en_parcial():
     coverage = pipeline._build_coverage(
         3, "heuristica", {"source_failed_pages": [[2]]})

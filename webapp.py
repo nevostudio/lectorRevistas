@@ -44,7 +44,7 @@ _LOCK = threading.Lock()
 _EXPORT_LOCK = threading.Lock()
 JOB = {
     "state": "idle",        # idle | running | done | error
-    "step": -1,             # 0..5 fase actual; 6 = todo hecho
+    "step": -1,             # 0..6 fase actual; 7 = todo hecho
     "messages": [],         # log en vivo
     "error": None,
     "result": None,         # dict de run_extraction (advertisers, pages, meta)
@@ -79,7 +79,7 @@ def _start_job() -> str | None:
 
 def _phase_for(msg: str, current: int) -> int:
     """Mapea (de forma robusta y solo-creciente) un mensaje de progreso del
-    backend a una de las 6 fases visuales del front."""
+    backend a una de las 7 fases visuales del front."""
     m = (msg or "").lower()
     step = current
 
@@ -95,18 +95,22 @@ def _phase_for(msg: str, current: int) -> int:
         up(1)
     if any(k in m for k in ("pagina", "página", "render", "imagen", "ocr")):
         up(2)
-    if "total de paginas" in m or "total de páginas" in m:
+    if any(k in m for k in ("comprobacion previa", "comprobación previa",
+                            "fuente preparada", "fuente es parcial")):
         up(3)
-    if any(k in m for k in ("analiz", "pliego", "claude", "detect",
-                            "heurist", "heuríst")):
-        up(3)
-    if "anunciantes detectados" in m:
+    detection_started = not any(
+        k in m for k in ("ia no iniciada", "no se ha consumido credito"))
+    if detection_started and any(
+            k in m for k in ("analiz", "pliego", "claude", "detect",
+                             "heurist", "heuríst")):
         up(4)
+    if "anunciantes detectados" in m:
+        up(5)
     if any(k in m for k in ("marcad", "revision", "revisión", "dedup",
                             "consolid")):
-        up(5)
+        up(6)
     if "terminado" in m:
-        up(5)
+        up(6)
     return step
 
 
@@ -194,7 +198,7 @@ def _extract_worker(params: dict, job_id: str | None = None):
                 "flagged": len(flagged),
                 "analysis_status": result.get("analysis_status", "completo"),
             }
-            JOB["step"] = 6
+            JOB["step"] = 7
             JOB["state"] = "done"
         # Si no hay dudosos, exportamos directamente (como la app de escritorio).
         if not flagged and result.get("analysis_status") == "completo":

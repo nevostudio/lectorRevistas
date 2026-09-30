@@ -66,11 +66,12 @@ const steps = [
   'Conectando con la fuente',
   'Descargando la revista',
   'Renderizando páginas a imagen',
+  'Comprobando integridad',
   'Detección de anuncios',
   'Cruzando contactos y deduplicando',
   'Marcando casos dudosos',
 ];
-const STEP_PCT = [8, 22, 38, 70, 88, 100];
+const STEP_PCT = [6, 18, 34, 46, 73, 90, 100];
 const checkSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M4 12l5 5L20 6"/></svg>';
 function renderSteps(state) {
   const list = $('#stepsList');

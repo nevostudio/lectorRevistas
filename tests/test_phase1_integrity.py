@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -27,8 +28,8 @@ def _detector(response_text, *, truncated=False):
     return detector
 
 
-def _page(number=1):
-    return SimpleNamespace(number=number, image_path="ficticia.png", text="")
+def _page(number=1, image_path="ficticia.png"):
+    return SimpleNamespace(number=number, image_path=image_path, text="")
 
 
 def test_confianza_cero_se_conserva_y_telefono_numerico_no_rompe():
@@ -66,6 +67,10 @@ def test_respuesta_truncada_conserva_resultados_y_marca_parcial():
 def test_todas_las_paginas_ia_fallidas_no_devuelven_exito(monkeypatch, tmp_path):
     pdf = tmp_path / "revista.pdf"
     pdf.write_bytes(b"%PDF-1.7")
+    image = tmp_path / "pagina.png"
+    image.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="))
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
@@ -76,7 +81,7 @@ def test_todas_las_paginas_ia_fallidas_no_devuelven_exito(monkeypatch, tmp_path)
             pass
 
         def from_pdf(self, *_args, **_kwargs):
-            return [_page(1), _page(2)]
+            return [_page(1, str(image)), _page(2, str(image))]
 
     def fake_detect(_pages, **kwargs):
         kwargs["telemetry"].update(failed_spreads=[[1], [2]])

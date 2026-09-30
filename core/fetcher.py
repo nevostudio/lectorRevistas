@@ -67,6 +67,7 @@ class FetchResult:
     image_paths: list[str] = field(default_factory=list)
     page_numbers: list[int] = field(default_factory=list)
     page_manifest: list[dict] = field(default_factory=list)
+    expected_pages: int | None = None  # total declarado por el visor
     viewer: str | None = None       # nombre del visor detectado, si lo hay
     workdir: str = ""
     notes: list[str] = field(default_factory=list)
@@ -284,8 +285,16 @@ class MagazineFetcher:
             if context.pages:
                 page = context.pages[-1]
 
+            expected_pages = self._detect_expected_pages(page)
+
             # Recorrer el flipbook pasando paginas para forzar la carga
-            self._page_through_flipbook(page)
+            max_pages = min(expected_pages + 2, 1000) \
+                if expected_pages else 80
+            self._page_through_flipbook(page, max_pages=max_pages)
+            expected_pages = max(
+                expected_pages or 0,
+                self._detect_expected_pages(page) or 0,
+            ) or None
 
             # Si en algun iframe hay un PDF accesible, capturarlo
             for frame in page.frames:
@@ -309,6 +318,7 @@ class MagazineFetcher:
             if path:
                 result.kind = "pdf"
                 result.pdf_path = path
+                result.expected_pages = expected_pages
                 result.notes.append("PDF capturado desde el visor.")
                 return result
 
@@ -323,6 +333,7 @@ class MagazineFetcher:
                 result.page_numbers = [m["page_number"]
                                        for m in result.page_manifest
                                        if m["status"] == "ok"]
+                result.expected_pages = expected_pages
                 result.notes.append(
                     f"{len(paths)} paginas capturadas como imagen.")
                 return result
@@ -390,6 +401,50 @@ class MagazineFetcher:
                 roots.append(frame)
         return roots
 
+    @classmethod
+    def _detect_expected_pages(cls, page) -> int | None:
+        """Lee contadores habituales del visor sin usar el texto editorial."""
+        candidates = []
+        selectors = [
+            "[data-total-pages]", "[data-page-count]", "[data-pages]",
+            "input[type='number'][max][class*='page']",
+            "input[type='number'][max][id*='page']",
+            "input[type='number'][max][name*='page']",
+            "[class*='page-count']",
+            "[class*='pageCount']", "[class*='page-counter']",
+            "[class*='pageCounter']", "[aria-label*='pages']",
+            "[aria-label*='páginas']", "[aria-label*='paginas']",
+        ]
+        patterns = [
+            r'\b\d{1,4}\s*(?:/|de|of)\s*(\d{1,4})\b',
+            r'\b(?:total(?:\s+de)?|pages?|paginas|páginas)\D{0,12}'
+            r'(\d{1,4})\b',
+        ]
+        for root in cls._interaction_roots(page):
+            for selector in selectors:
+                try:
+                    elements = root.query_selector_all(selector)
+                except Exception:  # noqa: BLE001
+                    continue
+                for element in elements[:20]:
+                    try:
+                        values = [element.inner_text(timeout=500)]
+                        for attr in ("data-total-pages", "data-page-count",
+                                     "data-pages", "max", "aria-label"):
+                            values.append(element.get_attribute(attr) or "")
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for value in values:
+                        stripped = str(value).strip()
+                        if stripped.isdigit():
+                            candidates.append(int(stripped))
+                        for pattern in patterns:
+                            candidates.extend(
+                                int(match) for match in re.findall(
+                                    pattern, stripped, re.I))
+        valid = [number for number in candidates if 1 < number <= 5000]
+        return max(valid) if valid else None
+
     def _page_through_flipbook(self, page, max_pages: int = 80):
         """Pasa paginas del flipbook para forzar la carga de cada imagen."""
         for i in range(max_pages):
@@ -447,7 +502,7 @@ class MagazineFetcher:
     def _download_images(self, urls: list[str]) -> list[str]:
         paths = []
         manifest = []
-        hashes = set()
+        hashes: dict[str, int] = {}
         used_numbers = set()
         img_dir = os.path.join(self.workdir, "pages")
         os.makedirs(img_dir, exist_ok=True)
@@ -457,14 +512,22 @@ class MagazineFetcher:
                 r.raise_for_status()
                 content = r.content
                 digest = hashlib.sha256(content).hexdigest()
+                page_number = self._page_number_from_url(u) or idx
                 if digest in hashes:
                     self.log(f"Imagen duplicada omitida: {u}")
+                    manifest.append({
+                        "page_number": page_number,
+                        "source_url": self._safe_source_url(u),
+                        "sha256": digest,
+                        "bytes": len(content),
+                        "status": "duplicate",
+                        "duplicate_of": hashes[digest],
+                    })
                     continue
-                hashes.add(digest)
-                page_number = self._page_number_from_url(u) or idx
                 while page_number in used_numbers:
                     page_number += 1
                 used_numbers.add(page_number)
+                hashes[digest] = page_number
                 ext = ".jpg"
                 if "png" in r.headers.get("Content-Type", ""):
                     ext = ".png"

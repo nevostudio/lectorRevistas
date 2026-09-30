@@ -39,3 +39,25 @@ plataforma cuando esté disponible.
 
 La comparación con el informe real anterior queda aplazada por decisión del
 usuario. No se ha enviado ninguna página ni realizado ninguna llamada de pago.
+
+### Ampliación de Fase 2 — comprobación previa de la fuente
+
+Completada el 30 de septiembre de 2026.
+
+- Diagnóstico automático antes de detectar anunciantes.
+- Identificación visible de PDF local, PDF remoto o lector por imágenes.
+- Comparación entre páginas esperadas y obtenidas cuando el visor publica el
+  total; detección de huecos internos cuando solo existe numeración parcial.
+- Validación de archivos ausentes, vacíos, dañados y con baja resolución.
+- Detección de números de página duplicados y descargas fallidas.
+- Registro explícito de imágenes duplicadas dentro del manifiesto de origen.
+- Lectura conservadora de contadores de página habituales en lectores web.
+- El recorrido del visor usa el total detectado en lugar del límite genérico
+  de 80 avances, con un máximo de seguridad de 1.000.
+- Bloqueo del modo IA cuando la fuente está incompleta, antes de realizar una
+  llamada a Claude. El modo gratis puede continuar, marcado como parcial.
+- Diagnóstico guardado en `comprobacion_fuente` dentro de los metadatos.
+- Paso visible «Comprobando integridad» añadido al progreso de la aplicación.
+
+Cuando el lector no publica un total fiable, el programa lo indica y valida
+las páginas observadas sin afirmar que la edición esté completa.

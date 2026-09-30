@@ -11,6 +11,7 @@ import os
 
 from core.fetcher import MagazineFetcher
 from core.pages import PageBuilder
+from core.preflight import check_source
 from core.detector import detect_advertisers, mark_for_review
 from core.report import export_all
 from core.logs import tee
@@ -70,6 +71,7 @@ def run_extraction(url: str | None = None,
     workdir = fetcher.workdir
     meta = {"url": url or "", "modo": "", "titulo": "Revista", "paginas": "—"}
     source_manifest = []
+    expected_pages = None
 
     # --- Fase 1: conseguir la revista -------------------------------------
     if pdf_path and os.path.exists(pdf_path):
@@ -84,6 +86,7 @@ def run_extraction(url: str | None = None,
         src_imgs = res.image_paths
         src_page_numbers = res.page_numbers
         source_manifest = res.page_manifest
+        expected_pages = res.expected_pages
         viewer = res.viewer
         for note in res.notes:
             progress("· " + note)
@@ -101,7 +104,43 @@ def run_extraction(url: str | None = None,
         if source_manifest:
             meta["manifiesto_paginas"] = source_manifest
     meta["paginas"] = len(pages)
-    progress(f"Total de paginas a analizar: {len(pages)}")
+    progress(f"Total de paginas preparadas: {len(pages)}")
+
+    # --- Comprobacion previa: nunca gastar IA con una fuente incompleta ----
+    source_check = check_source(
+        kind=kind,
+        pages=pages,
+        page_manifest=source_manifest,
+        viewer=viewer,
+        expected_pages=expected_pages,
+        local_pdf=bool(pdf_path),
+    )
+    meta["comprobacion_fuente"] = source_check.to_dict()
+    progress("Comprobacion previa: " + source_check.summary())
+    for warning in source_check.warnings:
+        progress("AVISO: " + warning)
+    if not source_check.ready:
+        for reason in source_check.blocking_reasons:
+            progress("ERROR: " + reason)
+        if use_ai:
+            progress("IA no iniciada: no se ha consumido credito de Claude.")
+            meta["estado_analisis"] = ANALYSIS_FAILED
+            return {
+                "ok": False,
+                "error": (
+                    "La comprobacion previa detecto una fuente incompleta. "
+                    "No se ha usado la API de Claude."),
+                "analysis_status": ANALYSIS_FAILED,
+                "advertisers": [],
+                "pages": pages,
+                "meta": meta,
+                "viewer": viewer,
+                "workdir": workdir,
+            }
+        progress("La fuente es parcial; el modo gratis continuara con aviso.")
+    else:
+        progress("Fuente preparada.")
+
     if not pages:
         coverage = {
             "estado": ANALYSIS_FAILED,
@@ -127,8 +166,12 @@ def run_extraction(url: str | None = None,
         }
 
     # --- Fase 3: detectar anunciantes -------------------------------------
-    source_failed = [m["page_number"] for m in source_manifest
-                     if m.get("status") == "failed"]
+    source_failed = sorted(set(
+        source_check.missing_pages +
+        source_check.failed_pages +
+        source_check.unreadable_pages +
+        source_check.duplicate_numbers
+    ))
     telemetry: dict = {
         "source_failed_pages": [[number] for number in source_failed],
     }
