@@ -27,3 +27,15 @@ Los lectores basados exclusivamente en canvas, mosaicos cifrados o sistemas
 con autenticación pueden necesitar un adaptador propio. También queda pendiente
 reemplazar el máximo genérico de avance del visor por el contador real de cada
 plataforma cuando esté disponible.
+
+### Actualización del análisis IA — preparada, pendiente de prueba real
+
+- Modelo por defecto actualizado de Claude Sonnet 4.6 a Claude Sonnet 5.5.
+- Structured Outputs activo mediante un esquema JSON estricto para anuncios.
+- Tarifas de entrada, salida y caché actualizadas para calcular el coste.
+- El modelo exacto utilizado queda guardado en los metadatos del informe.
+- Validación local mantenida como segunda barrera ante datos incoherentes.
+- Verificación automatizada con respuestas simuladas, sin consumir API.
+
+La comparación con el informe real anterior queda aplazada por decisión del
+usuario. No se ha enviado ninguna página ni realizado ninguna llamada de pago.

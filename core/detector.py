@@ -52,13 +52,23 @@ MAX_OUTPUT_TOKENS = 8000
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0   # segundos: 2, 4, 8...
 
-# Precios orientativos por millon de tokens (USD) para estimar coste.
-# Ajustar si cambia el modelo o la tarifa. Sonnet 4.x de referencia.
-PRICE_PER_MTOK = {
-    "input":        3.00,
-    "output":      15.00,
-    "cache_write":  3.75,   # escritura de cache (TTL 5 min)
-    "cache_read":   0.30,   # lectura de cache (90% mas barato que input)
+# Modelo por defecto y precios publicados por Anthropic por millon de tokens
+# (USD). Mantener la tarifa junto al ID evita calcular costes nuevos con la
+# tarifa del modelo anterior cuando se vuelva a actualizar.
+DEFAULT_AI_MODEL = "claude-sonnet-5-5"
+MODEL_PRICING_PER_MTOK = {
+    "claude-sonnet-5-5": {
+        "input":        2.00,
+        "output":      10.00,
+        "cache_write":  2.50,   # escritura de cache (TTL 5 min)
+        "cache_read":   0.20,
+    },
+    "claude-sonnet-4-6": {
+        "input":        3.00,
+        "output":      15.00,
+        "cache_write":  3.75,
+        "cache_read":   0.30,
+    },
 }
 
 
@@ -310,11 +320,60 @@ pliego). Si ocupa dos paginas, usa la izquierda. Si no hay anuncios, devuelve \
 {"anuncios": []}. Cada anuncio debe tener marca no vacia."""
 
 
+# El esquema se envia a Structured Outputs. Ademas de evitar JSON truncado o
+# con tipos impredecibles, obliga al modelo a completar todos los campos que el
+# validador local espera. El validador se conserva como segunda barrera.
+AI_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "anuncios": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "marca": {
+                        "type": "string",
+                        "description": "Nombre no vacio del anunciante",
+                    },
+                    "pagina": {
+                        "type": "integer",
+                        "description": "Numero de pagina, entero mayor que cero",
+                    },
+                    "web": {"type": "string"},
+                    "email": {"type": "string"},
+                    "telefono": {"type": "string"},
+                    "sector": {"type": "string"},
+                    "tamano": {
+                        "type": "string",
+                        "enum": [
+                            "doble pagina", "pagina completa", "media pagina",
+                            "cuarto", "octavo", "banner", "ficha",
+                            "publirreportaje", "directorio",
+                        ],
+                    },
+                    "confianza": {
+                        "type": "number",
+                        "description": "Confianza entre 0.0 y 1.0",
+                    },
+                },
+                "required": [
+                    "marca", "pagina", "web", "email", "telefono", "sector",
+                    "tamano", "confianza",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["anuncios"],
+    "additionalProperties": False,
+}
+
+
 class AIDetector:
     """Detecta anunciantes con el modelo de vision de Claude."""
 
     def __init__(self, api_key: str | None = None,
-                 model: str = "claude-sonnet-4-6", progress=None):
+                 model: str = DEFAULT_AI_MODEL, progress=None):
         if not ANTHROPIC_SDK:
             raise RuntimeError(
                 "El SDK de Anthropic no esta instalado. "
@@ -354,7 +413,9 @@ class AIDetector:
             u, "cache_read_input_tokens", 0) or 0
 
     def estimated_cost_usd(self) -> float:
-        return sum(self.usage[k] / 1_000_000 * PRICE_PER_MTOK[k]
+        prices = MODEL_PRICING_PER_MTOK.get(
+            self.model, MODEL_PRICING_PER_MTOK[DEFAULT_AI_MODEL])
+        return sum(self.usage[k] / 1_000_000 * prices[k]
                    for k in self.usage)
 
     def cost_summary(self) -> str:
@@ -425,6 +486,12 @@ class AIDetector:
                     max_tokens=MAX_OUTPUT_TOKENS,
                     system=self._system_blocks(),
                     messages=[{"role": "user", "content": content}],
+                    output_config={
+                        "format": {
+                            "type": "json_schema",
+                            "schema": AI_OUTPUT_SCHEMA,
+                        },
+                    },
                 )
                 self._add_usage(resp)
                 truncated = getattr(resp, "stop_reason", "") == "max_tokens"
@@ -706,6 +773,7 @@ def detect_advertisers(pages, use_ai: bool = False,
             det = AIDetector(api_key=api_key, progress=progress)
             result = det.detect(pages)
             if telemetry is not None:
+                telemetry["model"] = det.model
                 telemetry["cost_usd"] = det.estimated_cost_usd()
                 telemetry["usage"] = dict(det.usage)
                 telemetry["failed_spreads"] = list(det.failed_spreads)

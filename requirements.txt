@@ -12,7 +12,7 @@ openpyxl>=3.1          # export a Excel (.xlsx) con formato e hipervinculos
 playwright>=1.44
 
 # --- Modo IA (opcional, para el analisis visual con Claude) ---
-anthropic>=0.40
+anthropic>=1.10.0
 
 # --- Modo gratis con OCR (opcional, mejora la deteccion sin IA) ---
 # Requiere ademas el binario de Tesseract instalado en el sistema:

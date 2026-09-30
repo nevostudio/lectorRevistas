@@ -139,6 +139,8 @@ def run_extraction(url: str | None = None,
                     else "Heuristica (modo gratis)")
     if telemetry.get("cost_usd") is not None:
         meta["coste_usd"] = telemetry["cost_usd"]
+    if telemetry.get("model"):
+        meta["modelo_ia"] = telemetry["model"]
     if telemetry.get("failed_spreads"):
         meta["pliegos_fallidos"] = telemetry["failed_spreads"]
     if telemetry.get("partial_spreads"):
