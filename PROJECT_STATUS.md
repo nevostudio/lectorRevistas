@@ -61,3 +61,17 @@ Completada el 30 de septiembre de 2026.
 
 Cuando el lector no publica un total fiable, el programa lo indica y valida
 las páginas observadas sin afirmar que la edición esté completa.
+
+## Fase legal — Cumplimiento en España y la Unión Europea
+
+**Estado:** pendiente. Debe completarse antes de explotar comercialmente el
+software o entregar bases de contactos a clientes.
+
+El plan detallado está en [`docs/LEGAL_REVIEW_PLAN.md`](docs/LEGAL_REVIEW_PLAN.md).
+La revisión cubrirá obtención de revistas, propiedad intelectual y derechos
+sobre bases de datos, protección de datos, prospección comercial, proveedores
+de IA, seguridad, conservación, contratos y Reglamento europeo de IA.
+
+La fase producirá una matriz de riesgos y cambios concretos para el producto.
+La conclusión final deberá validarse con un profesional jurídico especializado
+en protección de datos, propiedad intelectual y comercio electrónico.
