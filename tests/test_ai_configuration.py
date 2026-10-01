@@ -64,9 +64,15 @@ def test_llamada_usa_structured_outputs_sin_acceder_a_la_api():
     assert response is not None
     assert truncated is False
     assert messages.kwargs["model"] == "claude-sonnet-5-5"
+    expected_schema = detector._output_schema([1, 2])
     assert messages.kwargs["output_config"] == {
-        "format": {"type": "json_schema", "schema": AI_OUTPUT_SCHEMA}
+        "format": {"type": "json_schema", "schema": expected_schema}
     }
+    page_schema = expected_schema["properties"]["anuncios"]["items"][
+        "properties"]["pagina"]
+    assert page_schema["enum"] == [1, 2]
+    assert "enum" not in AI_OUTPUT_SCHEMA["properties"]["anuncios"][
+        "items"]["properties"]["pagina"]
 
 
 def test_coste_usa_tarifa_del_modelo_elegido():

@@ -117,6 +117,75 @@ def test_pliego_ia_se_recupera_sin_segunda_llamada(tmp_path):
     assert second.resumed_usage["output"] == 20
 
 
+def test_checkpoint_antiguo_parcial_se_recalcula(tmp_path):
+    image = tmp_path / "page38.png"
+    image.write_bytes(_PNG_1X1)
+    page = SimpleNamespace(number=38, image_path=str(image), text="apoyo")
+    response = (
+        '{"anuncios":[{"marca":"ABB","pagina":38,"web":"",'
+        '"email":"","telefono":"","sector":"Electricidad",'
+        '"tamano":"publirreportaje","confianza":0.8}]}'
+    )
+    checkpoint = tmp_path / "analysis"
+    detector = _ai_detector(checkpoint, response)
+    legacy_path = detector._spread_checkpoint_path(
+        detector._spread_signature([page], legacy=True))
+    checkpoint.mkdir()
+    import json
+    with open(legacy_path, "w", encoding="utf-8") as stream:
+        json.dump({
+            "version": 1,
+            "model": DEFAULT_AI_MODEL,
+            "pages": [38],
+            "advertisers": [],
+            "usage": {"input": 50, "output": 10,
+                      "cache_write": 0, "cache_read": 0},
+            "invalid_items": [{"reason": "campos corregidos"}],
+            "partial": True,
+        }, stream)
+
+    result = detector._analyze_spread([page])
+
+    assert [item.brand for item in result] == ["ABB"]
+    assert detector.resumed_spreads == 0
+    assert detector.usage["input"] == 100
+
+
+def test_checkpoint_antiguo_completo_se_conserva(tmp_path):
+    image = tmp_path / "page1.png"
+    image.write_bytes(_PNG_1X1)
+    page = SimpleNamespace(number=1, image_path=str(image), text="apoyo")
+    checkpoint = tmp_path / "analysis"
+    detector = _ai_detector(checkpoint, '{"anuncios":[]}')
+    legacy_path = detector._spread_checkpoint_path(
+        detector._spread_signature([page], legacy=True))
+    checkpoint.mkdir()
+    import json
+    with open(legacy_path, "w", encoding="utf-8") as stream:
+        json.dump({
+            "version": 1,
+            "model": DEFAULT_AI_MODEL,
+            "pages": [1],
+            "advertisers": [{
+                "brand": "Marca conservada", "pages": [1], "website": "",
+                "email": "", "phone": "", "sector": "", "ad_size": "",
+                "confidence": 0.9, "method": "ia", "notes": "",
+                "review_flag": "",
+            }],
+            "usage": {"input": 50, "output": 10,
+                      "cache_write": 0, "cache_read": 0},
+            "invalid_items": [],
+            "partial": False,
+        }, stream)
+    detector._call_with_retry = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("no debe llamar a Claude"))
+
+    result = detector._analyze_spread([page])
+
+    assert [item.brand for item in result] == ["Marca conservada"]
+    assert detector.resumed_spreads == 1
+
+
 def test_pipeline_reutiliza_pdf_y_paginas_renderizadas(tmp_path):
     fitz = pytest.importorskip("fitz")
     pdf = tmp_path / "revista.pdf"

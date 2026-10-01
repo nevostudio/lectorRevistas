@@ -81,6 +81,26 @@ Un cierre del programa después de un pliego conserva el resultado de ese
 pliego. Al repetir la misma revista, el proceso recupera lo terminado y sigue
 desde el siguiente punto pendiente.
 
+### Validación real de la Fase 2 con Claude
+
+Completada el 1 de octubre de 2026 con la revista de Clima Noticias de 166
+páginas.
+
+- Claude Sonnet 5.5 analizó los 84 pliegos sin fallos de API.
+- Coste real estimado por la telemetría: 1,1371 USD.
+- Se obtuvieron 67 registros consolidados para revisión.
+- La prueba descubrió que 22 pliegos usaban la numeración editorial impresa
+  en vez del identificador técnico del PDF. No eran respuestas truncadas: era
+  una ambigüedad del contrato de página.
+- El esquema enviado a Claude restringe ahora `pagina` a los identificadores
+  exactos del pliego y el prompt ordena ignorar la numeración impresa.
+- La migración conserva 62 checkpoints válidos y obliga a recalcular solamente
+  los 22 afectados. El coste esperado de esa repetición parcial, según el uso
+  observado, es aproximadamente 0,284 USD.
+
+El informe de esta primera prueba se conserva como diagnóstico, pero permanece
+marcado como parcial. No debe considerarse el informe definitivo de la revista.
+
 ## Fase legal — Cumplimiento en España y la Unión Europea
 
 **Estado:** pendiente. Debe completarse antes de explotar comercialmente el

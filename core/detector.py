@@ -24,6 +24,7 @@ import json
 import base64
 import math
 import hashlib
+import copy
 from dataclasses import dataclass, field, asdict
 
 from core.checkpoint import atomic_write_json, file_sha256, read_json
@@ -73,6 +74,17 @@ MODEL_PRICING_PER_MTOK = {
         "cache_read":   0.30,
     },
 }
+
+# Permiten recuperar checkpoints creados antes de restringir el numero de
+# pagina al identificador tecnico del PDF. Los completos siguen siendo validos;
+# los parciales se recalculan con el contrato nuevo.
+AI_CHECKPOINT_VERSION = 2
+LEGACY_PROMPT_HASH = (
+    "a63e7872d26c9b6b7c4ee177e2a5c09afac7c78116d7aa00f523717a3067ee07"
+)
+LEGACY_SCHEMA_HASH = (
+    "a303e5955ae67755374ce635bbb71746a7552c5673687e8e427690ea6fad94fd"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -318,8 +330,10 @@ formato markdown:
   ]
 }
 
-El campo "pagina" debe ser el numero exacto donde aparece el anuncio (no del \
-pliego). Si ocupa dos paginas, usa la izquierda. Si no hay anuncios, devuelve \
+El campo "pagina" debe usar EXCLUSIVAMENTE uno de los identificadores tecnicos \
+de pagina indicados en la peticion. Ignora cualquier numero impreso dentro de \
+la revista: puede tener un desfase respecto al PDF. Si ocupa dos paginas, usa \
+el identificador tecnico de la imagen izquierda. Si no hay anuncios, devuelve \
 {"anuncios": []}. Cada anuncio debe tener marca no vacia."""
 
 
@@ -447,15 +461,43 @@ class AIDetector:
                 f"· cache_w {self.usage['cache_write']:,} "
                 f"· cache_r {self.usage['cache_read']:,} tokens)")
 
-    def _spread_signature(self, spread_pages: list) -> str:
+    @staticmethod
+    def _output_schema(page_nums: list[int]) -> dict:
+        """Restringe la pagina a los IDs tecnicos del pliego actual.
+
+        La numeracion impresa suele empezar varias hojas despues de la portada.
+        El enum evita que el modelo confunda esa numeracion editorial con el
+        indice real del PDF que utiliza el resto del programa.
+        """
+        schema = copy.deepcopy(AI_OUTPUT_SCHEMA)
+        page_schema = schema["properties"]["anuncios"]["items"][
+            "properties"]["pagina"]
+        page_schema["enum"] = list(page_nums)
+        page_schema["description"] = (
+            "Identificador tecnico del PDF. Debe ser uno de: "
+            + ", ".join(str(number) for number in page_nums)
+        )
+        return schema
+
+    def _spread_signature(self, spread_pages: list,
+                          *, legacy: bool = False) -> str:
+        page_nums = [page.number for page in spread_pages]
+        if legacy:
+            version = 1
+            prompt_hash = LEGACY_PROMPT_HASH
+            schema_hash = LEGACY_SCHEMA_HASH
+        else:
+            version = AI_CHECKPOINT_VERSION
+            prompt_hash = hashlib.sha256(
+                AI_SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+            schema_hash = hashlib.sha256(json.dumps(
+                self._output_schema(page_nums), sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()
         payload = {
-            "version": 1,
+            "version": version,
             "model": self.model,
-            "prompt": hashlib.sha256(
-                AI_SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
-            "schema": hashlib.sha256(json.dumps(
-                AI_OUTPUT_SCHEMA, sort_keys=True,
-                separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "prompt": prompt_hash,
+            "schema": schema_hash,
             "pages": [{
                 "number": page.number,
                 "image": file_sha256(page.image_path),
@@ -477,10 +519,22 @@ class AIDetector:
                                 page_nums: list[int]) -> list[Advertiser] | None:
         if not getattr(self, "checkpoint_dir", None):
             return None
-        path = self._spread_checkpoint_path(
-            self._spread_signature(spread_pages))
-        payload = read_json(path) if path else None
-        if not payload or payload.get("version") != 1:
+        payload = None
+        legacy = False
+        for is_legacy in (False, True):
+            path = self._spread_checkpoint_path(
+                self._spread_signature(spread_pages, legacy=is_legacy))
+            candidate = read_json(path) if path else None
+            expected_version = 1 if is_legacy else AI_CHECKPOINT_VERSION
+            if candidate and candidate.get("version") == expected_version:
+                # Los checkpoints antiguos parciales incluyen numeros de pagina
+                # editoriales corregidos de forma ambigua. Se recalculan.
+                if is_legacy and candidate.get("partial"):
+                    continue
+                payload = candidate
+                legacy = is_legacy
+                break
+        if not payload:
             return None
         advertisers = payload.get("advertisers")
         usage = payload.get("usage")
@@ -502,7 +556,9 @@ class AIDetector:
             self.invalid_items.extend(
                 item for item in cached_invalid if isinstance(item, dict))
         self.resumed_spreads += 1
-        self.log(f"IA: pliego {page_nums} recuperado; no genera coste nuevo.")
+        suffix = " (checkpoint anterior valido)" if legacy else ""
+        self.log(f"IA: pliego {page_nums} recuperado{suffix}; no genera "
+                 "coste nuevo.")
         return restored
 
     def _save_spread_checkpoint(self, spread_pages: list,
@@ -517,7 +573,7 @@ class AIDetector:
             return
         try:
             atomic_write_json(path, {
-                "version": 1,
+                "version": AI_CHECKPOINT_VERSION,
                 "model": self.model,
                 "pages": [page.number for page in spread_pages],
                 "advertisers": [asdict(item) for item in advertisers],
@@ -595,7 +651,7 @@ class AIDetector:
                     output_config={
                         "format": {
                             "type": "json_schema",
-                            "schema": AI_OUTPUT_SCHEMA,
+                            "schema": self._output_schema(page_nums),
                         },
                     },
                 )
