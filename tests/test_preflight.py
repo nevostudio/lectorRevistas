@@ -132,6 +132,7 @@ def test_pipeline_no_llama_ia_si_la_fuente_esta_incompleta(
     result = pipeline.run_extraction(
         pdf_path=str(pdf), use_ai=True, api_key="clave-simulada",
         progress=lambda _message: None,
+        workspace_root=str(tmp_path / "jobs"),
     )
 
     assert result["ok"] is False

@@ -44,6 +44,8 @@ def main(argv=None) -> int:
                     help="No guardar el analisis en la biblioteca local")
     ap.add_argument("--permitir-parcial", action="store_true",
                     help="Exporta aunque haya paginas pendientes de revision")
+    ap.add_argument("--no-reanudar", action="store_true",
+                    help="Empieza un trabajo nuevo e ignora checkpoints")
     args = ap.parse_args(argv)
 
     api_key = args.api_key or config.api_key()
@@ -57,6 +59,7 @@ def main(argv=None) -> int:
         use_ai=args.ia,
         api_key=api_key or None,
         run_ocr=not args.no_ocr,
+        resume=not args.no_reanudar,
     )
     if not result.get("ok"):
         print("ERROR:", result.get("error", "fallo desconocido"),

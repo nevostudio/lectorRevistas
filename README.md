@@ -87,6 +87,12 @@ Pega la URL de la revista (o elige un PDF local), escoge modo Gratis o IA, y
 pulsa **Extraer anunciantes**. Al terminar se habilita el botón para abrir el
 informe HTML.
 
+La opción **Reutilizar descarga y progreso** está activa por defecto. Si el
+programa se cierra, al repetir la misma revista recupera las páginas y los
+pliegos IA ya completados sin volver a cobrarlos. Desmárcala para empezar un
+trabajo independiente. Los checkpoints se guardan localmente en
+`.magazine_work/`; borrar esa carpeta elimina el progreso conservado.
+
 ### Línea de comandos
 
 ```python
@@ -104,6 +110,12 @@ cobertura, se puede aceptar de forma explicita con `--permitir-parcial`:
 
 ```bash
 python cli.py --pdf revista.pdf --ia --permitir-parcial
+```
+
+Para empezar desde cero desde la CLI:
+
+```bash
+python cli.py --pdf revista.pdf --ia --no-reanudar
 ```
 
 ---

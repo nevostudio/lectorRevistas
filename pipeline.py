@@ -12,6 +12,7 @@ import os
 from core.fetcher import MagazineFetcher
 from core.pages import PageBuilder
 from core.preflight import check_source
+from core.checkpoint import JobWorkspace
 from core.detector import detect_advertisers, mark_for_review
 from core.report import export_all
 from core.logs import tee
@@ -51,12 +52,32 @@ def _build_coverage(total_pages: int, mode: str, telemetry: dict) -> dict:
     }
 
 
+def _cached_source_is_reusable(source: dict) -> bool:
+    """No congela una captura por imagenes que ya sabemos incompleta."""
+    if source.get("kind") == "pdf":
+        return True
+    manifest = source.get("page_manifest") or []
+    ok_pages = {
+        int(item["page_number"]) for item in manifest
+        if item.get("status") == "ok" and
+        str(item.get("page_number", "")).isdigit()
+    }
+    if any(item.get("status") == "failed" for item in manifest):
+        return False
+    expected = source.get("expected_pages")
+    if isinstance(expected, int) and expected > 0 and len(ok_pages) < expected:
+        return False
+    return bool(source.get("image_paths"))
+
+
 def run_extraction(url: str | None = None,
                     pdf_path: str | None = None,
                     use_ai: bool = False,
                     api_key: str | None = None,
                     run_ocr: bool = True,
-                    progress=None) -> dict:
+                    progress=None,
+                    resume: bool = True,
+                    workspace_root: str | None = None) -> dict:
     """
     Ejecuta solo la extraccion (fases 1-3). NO exporta informes.
 
@@ -67,16 +88,42 @@ def run_extraction(url: str | None = None,
     progress = tee(progress or (lambda m: print(m)))
     progress("== Iniciando extraccion ==")
 
-    fetcher = MagazineFetcher(progress=progress)
-    workdir = fetcher.workdir
+    workspace = JobWorkspace(
+        url=url, pdf_path=pdf_path, resume=resume, root=workspace_root)
+    fetcher = MagazineFetcher(workdir=workspace.workdir, progress=progress)
+    workdir = workspace.workdir
     meta = {"url": url or "", "modo": "", "titulo": "Revista", "paginas": "—"}
+    meta["trabajo_id"] = workspace.job_id
     source_manifest = []
     expected_pages = None
+    src_page_numbers = []
+    source_reused = False
 
     # --- Fase 1: conseguir la revista -------------------------------------
-    if pdf_path and os.path.exists(pdf_path):
+    cached_source = workspace.load_source()
+    if cached_source and not _cached_source_is_reusable(cached_source):
+        progress("El checkpoint de la fuente esta incompleto; se reintentara "
+                 "la descarga.")
+        cached_source = None
+
+    if cached_source:
+        kind = cached_source["kind"]
+        src_pdf = cached_source["pdf_path"]
+        src_imgs = cached_source["image_paths"]
+        src_page_numbers = cached_source["page_numbers"]
+        source_manifest = cached_source["page_manifest"]
+        expected_pages = cached_source["expected_pages"]
+        viewer = cached_source["viewer"]
+        source_reused = True
+        progress("Fuente recuperada del trabajo anterior; no se descarga de "
+                 "nuevo.")
+    elif pdf_path and os.path.exists(pdf_path):
         progress(f"Usando PDF local: {pdf_path}")
-        kind, src_pdf, src_imgs, viewer = "pdf", pdf_path, [], None
+        src_pdf = workspace.copy_local_pdf(pdf_path)
+        kind, src_imgs, viewer = "pdf", [], None
+        workspace.save_source(
+            kind=kind, pdf_path=src_pdf, image_paths=[], page_numbers=[],
+            page_manifest=[], expected_pages=None, viewer=None, notes=[])
     else:
         if not url:
             raise ValueError("Hay que indicar una URL o un PDF local.")
@@ -93,6 +140,19 @@ def run_extraction(url: str | None = None,
         if not res.ok:
             return {"ok": False, "error": "No se pudo obtener la revista.",
                     "notes": res.notes, "workdir": workdir}
+        workspace.save_source(
+            kind=kind,
+            pdf_path=src_pdf,
+            image_paths=src_imgs,
+            page_numbers=src_page_numbers,
+            page_manifest=source_manifest,
+            expected_pages=expected_pages,
+            viewer=viewer,
+            notes=res.notes,
+        )
+
+    if source_reused:
+        meta["fuente_reanudada"] = True
 
     # --- Fase 2: construir paginas ----------------------------------------
     builder = PageBuilder(workdir, progress=progress)
@@ -177,13 +237,18 @@ def run_extraction(url: str | None = None,
     }
     advertisers, modo = detect_advertisers(
         pages, use_ai=use_ai, api_key=api_key, progress=progress,
-        telemetry=telemetry)
+        telemetry=telemetry, checkpoint_dir=workspace.analysis_dir)
     meta["modo"] = ("IA (analisis visual)" if modo == "ia"
                     else "Heuristica (modo gratis)")
     if telemetry.get("cost_usd") is not None:
         meta["coste_usd"] = telemetry["cost_usd"]
+        meta["coste_nuevo_usd"] = telemetry.get("new_cost_usd",
+                                                telemetry["cost_usd"])
+        meta["coste_reanudado_usd"] = telemetry.get("resumed_cost_usd", 0)
     if telemetry.get("model"):
         meta["modelo_ia"] = telemetry["model"]
+    if telemetry.get("resumed_spreads"):
+        meta["pliegos_reanudados"] = telemetry["resumed_spreads"]
     if telemetry.get("failed_spreads"):
         meta["pliegos_fallidos"] = telemetry["failed_spreads"]
     if telemetry.get("partial_spreads"):

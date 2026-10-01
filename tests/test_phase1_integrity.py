@@ -92,7 +92,8 @@ def test_todas_las_paginas_ia_fallidas_no_devuelven_exito(monkeypatch, tmp_path)
     monkeypatch.setattr(pipeline, "detect_advertisers", fake_detect)
 
     result = pipeline.run_extraction(pdf_path=str(pdf), use_ai=True,
-                                     progress=lambda _message: None)
+                                     progress=lambda _message: None,
+                                     workspace_root=str(tmp_path / "jobs"))
 
     assert result["ok"] is False
     assert result["analysis_status"] == "fallido"
@@ -122,7 +123,8 @@ def test_revista_sin_paginas_no_llega_al_detector(monkeypatch, tmp_path):
     )
 
     result = pipeline.run_extraction(pdf_path=str(pdf),
-                                     progress=lambda _message: None)
+                                     progress=lambda _message: None,
+                                     workspace_root=str(tmp_path / "jobs"))
 
     assert result["ok"] is False
     assert result["analysis_status"] == "fallido"

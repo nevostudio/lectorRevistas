@@ -62,6 +62,25 @@ Completada el 30 de septiembre de 2026.
 Cuando el lector no publica un total fiable, el programa lo indica y valida
 las páginas observadas sin afirmar que la edición esté completa.
 
+### Ampliación de Fase 2 — reanudación de trabajos
+
+Completada el 1 de octubre de 2026.
+
+- Identificador estable por URL o contenido del PDF.
+- Descargas y copias de PDF conservadas en `.magazine_work/`.
+- Checkpoint atómico por página con imagen, texto incrustado y OCR.
+- Checkpoint por pliego IA ligado al modelo, prompt, esquema, imágenes y texto.
+- Los pliegos recuperados no vuelven a llamar a Claude.
+- Separación entre coste total, coste recuperado y coste nuevo.
+- Las capturas incompletas se vuelven a descargar en vez de quedar congeladas.
+- Opción visible para reutilizar el trabajo o empezar uno nuevo.
+- Opción de CLI `--no-reanudar` para ignorar checkpoints.
+- No se guardan claves API ni URLs de recursos con parámetros sensibles.
+
+Un cierre del programa después de un pliego conserva el resultado de ese
+pliego. Al repetir la misma revista, el proceso recupera lo terminado y sigue
+desde el siguiente punto pendiente.
+
 ## Fase legal — Cumplimiento en España y la Unión Europea
 
 **Estado:** pendiente. Debe completarse antes de explotar comercialmente el

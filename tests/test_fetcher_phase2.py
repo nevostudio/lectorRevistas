@@ -71,8 +71,12 @@ def test_imagenes_se_ordenan_por_numero_y_conservan_huecos(
 def test_page_builder_respeta_numeracion_original(tmp_path):
     builder = PageBuilder(str(tmp_path), progress=lambda _message: None)
     builder._ocr = lambda _path: ""
+    one = tmp_path / "uno.jpg"
+    ten = tmp_path / "diez.jpg"
+    one.write_bytes(b"imagen-uno")
+    ten.write_bytes(b"imagen-diez")
 
-    pages = builder.from_images(["uno.jpg", "diez.jpg"],
+    pages = builder.from_images([str(one), str(ten)],
                                 run_ocr=False, page_numbers=[1, 10])
 
     assert [page.number for page in pages] == [1, 10]

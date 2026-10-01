@@ -23,7 +23,10 @@ import time
 import json
 import base64
 import math
+import hashlib
 from dataclasses import dataclass, field, asdict
+
+from core.checkpoint import atomic_write_json, file_sha256, read_json
 
 try:
     import anthropic
@@ -373,7 +376,8 @@ class AIDetector:
     """Detecta anunciantes con el modelo de vision de Claude."""
 
     def __init__(self, api_key: str | None = None,
-                 model: str = DEFAULT_AI_MODEL, progress=None):
+                 model: str = DEFAULT_AI_MODEL, progress=None,
+                 checkpoint_dir: str | None = None):
         if not ANTHROPIC_SDK:
             raise RuntimeError(
                 "El SDK de Anthropic no esta instalado. "
@@ -386,10 +390,14 @@ class AIDetector:
         self.client = anthropic.Anthropic(api_key=self.api_key)
         self.model = model
         self._progress = progress or (lambda m: None)
+        self.checkpoint_dir = checkpoint_dir
 
         # Telemetria de la ejecucion en curso.
         self.usage = {"input": 0, "output": 0,
                       "cache_write": 0, "cache_read": 0}
+        self.resumed_usage = {"input": 0, "output": 0,
+                              "cache_write": 0, "cache_read": 0}
+        self.resumed_spreads = 0
         self.failed_spreads: list[list[int]] = []   # pliegos no recuperados
         self.partial_spreads: list[list[int]] = []  # respuesta parcial/invalida
         self.invalid_items: list[dict] = []          # registros IA rechazados
@@ -412,18 +420,116 @@ class AIDetector:
         self.usage["cache_read"] += getattr(
             u, "cache_read_input_tokens", 0) or 0
 
-    def estimated_cost_usd(self) -> float:
+    def _cost_for_usage(self, usage: dict) -> float:
         prices = MODEL_PRICING_PER_MTOK.get(
             self.model, MODEL_PRICING_PER_MTOK[DEFAULT_AI_MODEL])
-        return sum(self.usage[k] / 1_000_000 * prices[k]
-                   for k in self.usage)
+        return sum(usage.get(k, 0) / 1_000_000 * prices[k]
+                   for k in prices)
+
+    def estimated_cost_usd(self) -> float:
+        return self._cost_for_usage(self.usage)
+
+    def resumed_cost_usd(self) -> float:
+        return self._cost_for_usage(self.resumed_usage)
+
+    def new_cost_usd(self) -> float:
+        return max(0.0, self.estimated_cost_usd() - self.resumed_cost_usd())
 
     def cost_summary(self) -> str:
         c = self.estimated_cost_usd()
-        return (f"Coste estimado: ${c:.3f} "
+        resumed = self.resumed_cost_usd()
+        prefix = f"Coste estimado: ${c:.3f}"
+        if self.resumed_spreads:
+            prefix += (f" · reutilizado: ${resumed:.3f} · nuevo: "
+                       f"${self.new_cost_usd():.3f}")
+        return (prefix + " "
                 f"(in {self.usage['input']:,} · out {self.usage['output']:,} "
                 f"· cache_w {self.usage['cache_write']:,} "
                 f"· cache_r {self.usage['cache_read']:,} tokens)")
+
+    def _spread_signature(self, spread_pages: list) -> str:
+        payload = {
+            "version": 1,
+            "model": self.model,
+            "prompt": hashlib.sha256(
+                AI_SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
+            "schema": hashlib.sha256(json.dumps(
+                AI_OUTPUT_SCHEMA, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "pages": [{
+                "number": page.number,
+                "image": file_sha256(page.image_path),
+                "text": hashlib.sha256(
+                    (page.text or "").encode("utf-8")).hexdigest(),
+            } for page in spread_pages],
+        }
+        return hashlib.sha256(json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+
+    def _spread_checkpoint_path(self, signature: str) -> str | None:
+        checkpoint_dir = getattr(self, "checkpoint_dir", None)
+        if not checkpoint_dir:
+            return None
+        return os.path.join(checkpoint_dir, f"spread-{signature}.json")
+
+    def _load_spread_checkpoint(self, spread_pages: list,
+                                page_nums: list[int]) -> list[Advertiser] | None:
+        if not getattr(self, "checkpoint_dir", None):
+            return None
+        path = self._spread_checkpoint_path(
+            self._spread_signature(spread_pages))
+        payload = read_json(path) if path else None
+        if not payload or payload.get("version") != 1:
+            return None
+        advertisers = payload.get("advertisers")
+        usage = payload.get("usage")
+        if not isinstance(advertisers, list) or not isinstance(usage, dict):
+            return None
+        try:
+            restored = [Advertiser(**item) for item in advertisers]
+        except (TypeError, ValueError):
+            return None
+        for key in self.usage:
+            value = usage.get(key, 0)
+            if isinstance(value, int) and value >= 0:
+                self.usage[key] += value
+                self.resumed_usage[key] += value
+        if payload.get("partial"):
+            self._record_spread(self.partial_spreads, page_nums)
+        cached_invalid = payload.get("invalid_items") or []
+        if isinstance(cached_invalid, list):
+            self.invalid_items.extend(
+                item for item in cached_invalid if isinstance(item, dict))
+        self.resumed_spreads += 1
+        self.log(f"IA: pliego {page_nums} recuperado; no genera coste nuevo.")
+        return restored
+
+    def _save_spread_checkpoint(self, spread_pages: list,
+                                advertisers: list[Advertiser],
+                                usage: dict, invalid_items: list[dict],
+                                partial: bool) -> None:
+        if not getattr(self, "checkpoint_dir", None):
+            return
+        path = self._spread_checkpoint_path(
+            self._spread_signature(spread_pages))
+        if not path:
+            return
+        try:
+            atomic_write_json(path, {
+                "version": 1,
+                "model": self.model,
+                "pages": [page.number for page in spread_pages],
+                "advertisers": [asdict(item) for item in advertisers],
+                "usage": {key: int(usage.get(key, 0)) for key in self.usage},
+                "invalid_items": list(invalid_items),
+                "partial": bool(partial),
+            })
+        except OSError as exc:
+            # La respuesta ya se ha pagado y es util: un fallo local al guardar
+            # el checkpoint no debe descartarla ni activar el fallback gratis.
+            self.log(f"AVISO: no se pudo guardar el checkpoint del pliego "
+                     f"{[page.number for page in spread_pages]}: {exc}")
 
     @staticmethod
     def _encode_image(path: str) -> tuple[str, str]:
@@ -601,6 +707,27 @@ class AIDetector:
         de anunciantes detectados en cualquiera de ellas."""
         content: list = []
         page_nums = [p.number for p in spread_pages]
+        cached = self._load_spread_checkpoint(spread_pages, page_nums)
+        if cached is not None:
+            return cached
+
+        usage_before = dict(self.usage)
+        invalid_start = len(self.invalid_items)
+
+        def finish(result: list[Advertiser]) -> list[Advertiser]:
+            spread_usage = {
+                key: self.usage[key] - usage_before[key]
+                for key in self.usage
+            }
+            self._save_spread_checkpoint(
+                spread_pages,
+                result,
+                spread_usage,
+                self.invalid_items[invalid_start:],
+                page_nums in self.partial_spreads,
+            )
+            return result
+
         for p in spread_pages:
             media, data = self._encode_image(p.image_path)
             content.append({"type": "image", "source": {
@@ -637,7 +764,7 @@ class AIDetector:
         if not items:
             if not valid_payload:
                 self.log(f"IA: pliego {page_nums} sin JSON valido.")
-            return []
+            return finish([])
 
         out: list[Advertiser] = []
         valid_pages = set(page_nums)
@@ -692,7 +819,7 @@ class AIDetector:
                        if not item_partial else
                        "Detectado por IA; revisar campos incompletos."),
             ))
-        return out
+        return finish(out)
 
     @staticmethod
     def _build_spreads(pages: list) -> list[list]:
@@ -758,7 +885,8 @@ class AIDetector:
 def detect_advertisers(pages, use_ai: bool = False,
                        api_key: str | None = None,
                        progress=None,
-                       telemetry: dict | None = None
+                       telemetry: dict | None = None,
+                       checkpoint_dir: str | None = None
                        ) -> tuple[list[Advertiser], str]:
     """
     Devuelve (lista_anunciantes, modo_usado).
@@ -770,11 +898,15 @@ def detect_advertisers(pages, use_ai: bool = False,
     progress = progress or (lambda m: None)
     if use_ai:
         try:
-            det = AIDetector(api_key=api_key, progress=progress)
+            det = AIDetector(api_key=api_key, progress=progress,
+                             checkpoint_dir=checkpoint_dir)
             result = det.detect(pages)
             if telemetry is not None:
                 telemetry["model"] = det.model
                 telemetry["cost_usd"] = det.estimated_cost_usd()
+                telemetry["new_cost_usd"] = det.new_cost_usd()
+                telemetry["resumed_cost_usd"] = det.resumed_cost_usd()
+                telemetry["resumed_spreads"] = det.resumed_spreads
                 telemetry["usage"] = dict(det.usage)
                 telemetry["failed_spreads"] = list(det.failed_spreads)
                 telemetry["partial_spreads"] = list(det.partial_spreads)

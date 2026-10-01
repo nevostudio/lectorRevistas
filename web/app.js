@@ -118,6 +118,7 @@ async function startExtraction() {
       body: JSON.stringify({
         url, pdf_token: pdfToken, mode, api_key: apiKey,
         remember: $('#rememberKey').checked,
+        resume: $('#resumeJob').checked,
       }),
     });
     activeJobId = started.job_id || null;
@@ -164,11 +165,14 @@ async function pollStatus() {
     ? 'Extracción parcial: revisa las páginas pendientes.'
     : 'Extracción finalizada correctamente.';
   $('#rbTitle').textContent = `${s.total} anunciantes extraídos`;
-  $('#rbSub').textContent = partial
+  const resumed = (s.resumed_spreads || 0) > 0
+    ? ` · ${s.resumed_spreads} pliegos recuperados sin coste nuevo`
+    : s.source_resumed ? ' · fuente reutilizada' : '';
+  $('#rbSub').textContent = (partial
     ? 'El informe no se generará hasta que revises el resultado parcial.'
     : s.flagged
     ? `${s.flagged} marcados para revisar antes de entregar`
-    : 'Ninguno requiere revisión manual';
+    : 'Ninguno requiere revisión manual') + resumed;
   const goBtn = $('#goReview');
   if (s.flagged || partial) {
     goBtn.style.display = '';

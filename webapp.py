@@ -149,6 +149,7 @@ def _extract_worker(params: dict, job_id: str | None = None):
     given_key = (params.get("api_key") or "").strip()
     api_key = given_key or config.api_key() or None
     remember = bool(params.get("remember"))
+    resume = params.get("resume", True) is not False
 
     pdf_path = None
     token = params.get("pdf_token")
@@ -171,6 +172,7 @@ def _extract_worker(params: dict, job_id: str | None = None):
         result = run_extraction(
             url=url, pdf_path=pdf_path, use_ai=use_ai,
             api_key=api_key, run_ocr=True, progress=_progress,
+            resume=resume,
         )
         if not result.get("ok"):
             with _LOCK:
@@ -197,6 +199,10 @@ def _extract_worker(params: dict, job_id: str | None = None):
                 "total": len(advertisers),
                 "flagged": len(flagged),
                 "analysis_status": result.get("analysis_status", "completo"),
+                "source_resumed": bool(
+                    result.get("meta", {}).get("fuente_reanudada")),
+                "resumed_spreads": int(
+                    result.get("meta", {}).get("pliegos_reanudados") or 0),
             }
             JOB["step"] = 7
             JOB["state"] = "done"
