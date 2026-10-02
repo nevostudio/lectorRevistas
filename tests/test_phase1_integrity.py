@@ -5,12 +5,14 @@ import base64
 from types import SimpleNamespace
 
 import pytest
+import openpyxl
 
 import pipeline
 import webapp
 import core.report as report_module
 from core.detector import AIDetector, Advertiser
 from core.report import export_all
+from core.report import export_xlsx
 
 
 def _detector(response_text, *, truncated=False):
@@ -144,6 +146,52 @@ def test_exportaciones_consecutivas_tienen_rutas_unicas(tmp_path):
     assert json.loads((tmp_path / os.path.basename(first["json"])).read_text(
         encoding="utf-8"))[
         "anunciantes"][0]["brand"] == "Empresa ficticia"
+    assert first["xlsx"].endswith(".xlsx")
+    assert os.path.exists(first["xlsx"])
+
+
+def test_excel_incluye_datos_normalizados_para_base_de_datos(tmp_path):
+    advertiser = Advertiser(
+        "Samsung España",
+        pages=[3, 8],
+        website="samsung.com/es",
+        email="contacto@example.com",
+        phone="012345678",
+        sector="Climatización",
+        ad_size="pagina completa",
+        confidence=0.875,
+        method="ia",
+        notes="Revisado",
+        review_flag="variant",
+    )
+    path = tmp_path / "informe.xlsx"
+    export_xlsx([advertiser], str(path), {
+        "titulo": "Revista de prueba",
+        "url": "https://example.test/revista.pdf",
+        "trabajo_id": "job-123",
+        "export_id": "export-456",
+        "estado_analisis": "completo",
+    })
+
+    workbook = openpyxl.load_workbook(path, data_only=False)
+    assert workbook.sheetnames == ["Resumen", "Anunciantes", "Datos"]
+    data = workbook["Datos"]
+    headers = [cell.value for cell in data[1]]
+    assert headers == [
+        "appearance_id", "advertiser_id", "brand", "sector", "page",
+        "website", "email", "phone", "ad_size", "confidence", "method",
+        "notes", "review_flag", "analysis_status", "source_url",
+        "source_title", "job_id", "export_id",
+    ]
+    assert data.max_row == 3
+    assert [data.cell(row=row, column=5).value for row in (2, 3)] == [3, 8]
+    assert data["J2"].value == pytest.approx(0.875)
+    assert data["H2"].value == "012345678"
+    assert data["H2"].number_format == "@"
+    assert data["B2"].value == data["B3"].value == "job-123:a0001"
+    assert data["A2"].value != data["A3"].value
+    assert data["Q2"].value == "job-123"
+    assert data["R2"].value == "export-456"
 
 
 def test_exportacion_interrumpida_no_publica_archivos_incompletos(

@@ -101,6 +101,20 @@ páginas.
 El informe de esta primera prueba se conserva como diagnóstico, pero permanece
 marcado como parcial. No debe considerarse el informe definitivo de la revista.
 
+### Ampliación de Fase 2 — Excel preparado para base de datos
+
+Completada el 2 de octubre de 2026.
+
+- El `.xlsx` forma parte obligatoria del export final.
+- Conserva las hojas `Resumen` y `Anunciantes` para lectura y revisión.
+- Añade la hoja `Datos` con nombres de columna técnicos y estables.
+- Genera una fila por aparición anunciante/página, con página y confianza como
+  valores numéricos.
+- Incluye identificadores de anunciante y aparición, estado del análisis,
+  fuente, trabajo y exportación para facilitar la carga posterior.
+- Teléfonos e identificadores se conservan como texto para evitar pérdidas de
+  ceros iniciales.
+
 ## Fase legal — Cumplimiento en España y la Unión Europea
 
 **Estado:** pendiente. Debe completarse antes de explotar comercialmente el

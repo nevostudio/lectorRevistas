@@ -78,11 +78,15 @@ def export_csv(advertisers, path: str, meta: dict | None = None):
 
 
 def export_xlsx(advertisers, path: str, meta: dict):
-    """Genera un Excel profesional con dos hojas: Resumen y Anunciantes.
+    """Genera un Excel profesional y util para importar a una base de datos.
 
     Hoja Anunciantes: cabecera negra estilo Nevo, autofiltro, fila fija,
     hipervinculos en web/email, confianza coloreada. Pensado para que el
     cliente filtre y trabaje directamente.
+
+    Hoja Datos: columnas tecnicas estables y una fila por aparicion
+    anunciante/pagina. Se evita guardar listas dentro de una celda para que la
+    importacion a SQL, Airtable, Supabase u otra base resulte directa.
     """
     if not OPENPYXL_AVAILABLE:
         raise RuntimeError("openpyxl no esta instalado (pip install openpyxl)")
@@ -139,9 +143,16 @@ def export_xlsx(advertisers, path: str, meta: dict):
 
     r = 5
     for label, value in rows:
-        ws0.cell(row=r, column=2, value=label).font = Font(
+        label_cell = ws0.cell(row=r, column=2, value=label)
+        label_cell.font = Font(
             name="Arial", size=10, bold=True, color=XL_INK)
-        ws0.cell(row=r, column=3, value=value).font = cell_font
+        value_cell = ws0.cell(row=r, column=3, value=value)
+        value_cell.font = cell_font
+        if len(str(value or "")) > 80:
+            label_cell.alignment = Alignment(vertical="top", wrap_text=True)
+            value_cell.alignment = Alignment(
+                vertical="top", wrap_text=True)
+            ws0.row_dimensions[r].height = 60
         r += 1
     ws0.column_dimensions["B"].width = 30
     ws0.column_dimensions["C"].width = 60
@@ -151,7 +162,7 @@ def export_xlsx(advertisers, path: str, meta: dict):
     ws.sheet_view.showGridLines = False
     headers = ["Marca", "Sector", "Paginas", "Web", "Email", "Telefono",
                "Tamano", "Confianza", "Metodo", "Notas"]
-    widths = [26, 22, 12, 30, 30, 16, 18, 12, 12, 40]
+    widths = [28, 28, 22, 32, 30, 18, 20, 12, 12, 42]
     for c, (htext, w) in enumerate(zip(headers, widths), 1):
         cell = ws.cell(row=1, column=c, value=htext)
         cell.font = head_font
@@ -178,7 +189,11 @@ def export_xlsx(advertisers, path: str, meta: dict):
             cell = ws.cell(row=i, column=c, value=val)
             cell.font = cell_font
             cell.border = border
-            cell.alignment = Alignment(vertical="center", wrap_text=(c == 10))
+            cell.alignment = Alignment(
+                vertical="top", wrap_text=(c in (2, 3, 10)))
+        if (len(str(values[1])) > 35 or len(str(values[2])) > 24 or
+                len(str(values[9])) > 55):
+            ws.row_dimensions[i].height = 32
 
         # Hipervinculos
         web_cell = ws.cell(row=i, column=4)
@@ -213,6 +228,83 @@ def export_xlsx(advertisers, path: str, meta: dict):
     last_row = max(1, len(advertisers) + 1)
     ws.auto_filter.ref = f"A1:J{last_row}"
     ws.freeze_panes = "A2"
+
+    # ---------------- Hoja Datos (importacion) ----------------
+    db = wb.create_sheet("Datos")
+    db.sheet_view.showGridLines = False
+    db_headers = [
+        "appearance_id", "advertiser_id", "brand", "sector", "page",
+        "website", "email", "phone", "ad_size", "confidence", "method",
+        "notes", "review_flag", "analysis_status", "source_url",
+        "source_title", "job_id", "export_id",
+    ]
+    db_widths = [36, 32, 28, 24, 10, 32, 30, 18, 20, 14, 14, 42, 24,
+                 18, 42, 24, 28, 34]
+    for column, (header, width) in enumerate(zip(db_headers, db_widths), 1):
+        cell = db.cell(row=1, column=column, value=header)
+        cell.font = head_font
+        cell.fill = head_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.border = border
+        db.column_dimensions[get_column_letter(column)].width = width
+    db.row_dimensions[1].height = 22
+
+    job_id = str(meta.get("trabajo_id") or "")
+    export_id = str(meta.get("export_id") or "")
+    id_prefix = job_id or export_id or "export"
+    analysis_status = str(meta.get("estado_analisis") or "completo")
+    source_url = str(meta.get("url") or "")
+    source_title = str(meta.get("titulo") or "")
+    db_row = 2
+    for advertiser_index, a in enumerate(advertisers, start=1):
+        d = a if isinstance(a, dict) else a.__dict__
+        advertiser_id = f"{id_prefix}:a{advertiser_index:04d}"
+        pages = list(d.get("pages") or [None])
+        for appearance_index, page in enumerate(pages, start=1):
+            appearance_id = (
+                f"{advertiser_id}:p{int(page):04d}"
+                if isinstance(page, int) and not isinstance(page, bool)
+                else f"{advertiser_id}:n{appearance_index:04d}"
+            )
+            values = [
+                appearance_id,
+                advertiser_id,
+                str(d.get("brand") or ""),
+                str(d.get("sector") or ""),
+                page if isinstance(page, int) and not isinstance(page, bool)
+                else None,
+                str(d.get("website") or ""),
+                str(d.get("email") or ""),
+                str(d.get("phone") or ""),
+                str(d.get("ad_size") or ""),
+                float(d.get("confidence") or 0),
+                str(d.get("method") or ""),
+                str(d.get("notes") or ""),
+                str(d.get("review_flag") or ""),
+                analysis_status,
+                source_url,
+                source_title,
+                job_id,
+                export_id,
+            ]
+            for column, value in enumerate(values, 1):
+                cell = db.cell(row=db_row, column=column, value=value)
+                cell.font = cell_font
+                cell.border = border
+                cell.alignment = Alignment(
+                    vertical="center", wrap_text=(column in (12, 15)))
+            db.cell(row=db_row, column=5).number_format = "0"
+            db.cell(row=db_row, column=8).number_format = "@"
+            db.cell(row=db_row, column=10).number_format = "0.00%"
+            if db_row % 2 == 0:
+                for column in range(1, len(db_headers) + 1):
+                    db.cell(row=db_row, column=column).fill = PatternFill(
+                        "solid", fgColor=XL_GRAY_50)
+            db_row += 1
+
+    db_last_row = max(1, db_row - 1)
+    db.auto_filter.ref = f"A1:R{db_last_row}"
+    db.freeze_panes = "A2"
 
     wb.save(path)
 
@@ -553,9 +645,8 @@ def export_all(advertisers, outdir: str, meta: dict) -> dict:
         "html": os.path.join(outdir, base + ".html"),
         "csv": os.path.join(outdir, base + ".csv"),
         "json": os.path.join(outdir, base + ".json"),
+        "xlsx": os.path.join(outdir, base + ".xlsx"),
     }
-    if OPENPYXL_AVAILABLE:
-        paths["xlsx"] = os.path.join(outdir, base + ".xlsx")
 
     staged = {}
     try:
@@ -570,14 +661,7 @@ def export_all(advertisers, outdir: str, meta: dict) -> dict:
         export_html(advertisers, staged["html"], meta)
         export_csv(advertisers, staged["csv"], meta)
         export_json(advertisers, staged["json"], meta)
-        if "xlsx" in staged:
-            try:
-                export_xlsx(advertisers, staged["xlsx"], meta)
-            except Exception:  # noqa: BLE001
-                # Excel sigue siendo opcional: una limitacion de openpyxl no
-                # debe impedir publicar los tres formatos base.
-                os.remove(staged.pop("xlsx"))
-                paths.pop("xlsx", None)
+        export_xlsx(advertisers, staged["xlsx"], meta)
         # Solo publicar los nombres finales cuando todos los formatos existen.
         for kind, tmp in staged.items():
             os.replace(tmp, paths[kind])

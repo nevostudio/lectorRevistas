@@ -315,7 +315,7 @@ $('#exportBtn').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decisions, job_id: review.jobId || activeJobId }),
     });
-    toast(`Informe generado · ${r.n} anunciantes`, 'ok');
+    toast(`Informe y Excel generados · ${r.n} anunciantes · carpeta output`, 'ok');
     await refreshReview();
     loadLibrary();
   } catch (err) {

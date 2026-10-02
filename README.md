@@ -26,7 +26,9 @@ El proceso tiene cuatro fases:
      reconoce la marca, los datos de contacto y si la página es un anuncio
      real. Más preciso. Requiere una clave de API de Anthropic.
 4. **Informe** — Genera `anunciantes_FECHA.html` (informe visual),
-   `.csv` (para Excel) y `.json` (para integraciones) en la carpeta `output/`.
+   `.xlsx`, `.csv` y `.json` en la carpeta `output/`. El Excel incluye una
+   hoja visual de anunciantes y una hoja `Datos`, con una fila por aparición,
+   preparada para importar a una base de datos.
 
 Cada ejecucion registra su cobertura con uno de estos estados:
 
